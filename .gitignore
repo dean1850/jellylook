@@ -1,0 +1,19 @@
+# Secrets — never commit your real .env
+.env
+.env.*
+!.env.example
+
+# Runtime data (SQLite DB, WAL files)
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
