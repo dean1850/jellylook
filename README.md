@@ -143,7 +143,6 @@ The match % is the model's own similarity estimate — directionally useful, not
 - **No users / scan fails immediately** — Jellystat or Jellyfin is unreachable or the API key is wrong. Both URLs must be reachable *from inside the container* (use LAN IPs, not `localhost`).
 - **Add to Seerr disabled** — Seerr didn't answer; cards still work and the button returns when Seerr does.
 - **OMDb limit** — the free key allows 1,000 lookups/day. The cache makes re-scans nearly free; Settings shows today's count.
-- **`data/` permission errors after upgrading** — the container now runs as a non-root user (uid 1000). If an older install created `data/` as root, run `sudo chown -R 1000:1000 ./data` once and restart.
 
 ## Security
 
