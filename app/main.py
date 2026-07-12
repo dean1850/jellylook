@@ -27,6 +27,9 @@ STATIC_DIR = Path(__file__).parent / "static"
 # In-memory scan state: {"state": idle|running|done|failed, ...}
 _scan_state: dict = {"state": "idle"}
 _scan_lock = asyncio.Lock()
+# Strong reference to the running scan task — asyncio only keeps a weak
+# reference, so an un-referenced task can be garbage-collected mid-scan.
+_scan_task: asyncio.Task | None = None
 
 
 async def _purge_loop(retention_days: int) -> None:
@@ -95,12 +98,38 @@ async def settings_get():
     return db.settings_get_all()
 
 
+_SETTING_CHOICES = {
+    "tv_request_mode": {"ask", "all", "first"},
+    "default_sort": {"match", "imdb", "year"},
+    "default_filter": {"all", "movie", "tv"},
+}
+
+
+def _validate_setting(key: str, value: str) -> str:
+    choices = _SETTING_CHOICES.get(key)
+    if choices is not None:
+        if value not in choices:
+            raise HTTPException(
+                400, f"{key} must be one of {sorted(choices)}, got {value!r}")
+        return value
+    if key == "recs_per_scan":
+        try:
+            return str(max(5, min(100, int(value))))
+        except (ValueError, TypeError):
+            raise HTTPException(400, "recs_per_scan must be a number")
+    return value  # default_user_ids: free-form id list
+
+
 @app.post("/api/settings")
 async def settings_post(payload: dict):
     allowed = set(db.DEFAULT_SETTINGS)
-    for key, value in payload.items():
-        if key in allowed:
-            db.settings_set(str(key), str(value))
+    # Validate everything first so a bad value can't half-apply the payload.
+    validated = {
+        str(key): _validate_setting(str(key), str(value))
+        for key, value in payload.items() if key in allowed
+    }
+    for key, value in validated.items():
+        db.settings_set(key, value)
     return db.settings_get_all()
 
 
@@ -122,6 +151,7 @@ async def _run_scan_task(user_ids: list[str]) -> None:
 
 @app.post("/api/scan")
 async def scan(payload: dict):
+    global _scan_task
     user_ids = payload.get("user_ids") or []
     if not user_ids or not isinstance(user_ids, list):
         raise HTTPException(400, "user_ids (non-empty list) is required")
@@ -132,7 +162,7 @@ async def scan(payload: dict):
             raise HTTPException(409, "A scan is already running")
         _scan_state.clear()
         _scan_state.update({"state": "running", "step": "starting"})
-        asyncio.create_task(_run_scan_task([str(u) for u in user_ids]))
+        _scan_task = asyncio.create_task(_run_scan_task([str(u) for u in user_ids]))
     return {"started": True}
 
 

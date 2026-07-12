@@ -143,6 +143,15 @@ The match % is the model's own similarity estimate — directionally useful, not
 - **No users / scan fails immediately** — Jellystat or Jellyfin is unreachable or the API key is wrong. Both URLs must be reachable *from inside the container* (use LAN IPs, not `localhost`).
 - **Add to Seerr disabled** — Seerr didn't answer; cards still work and the button returns when Seerr does.
 - **OMDb limit** — the free key allows 1,000 lookups/day. The cache makes re-scans nearly free; Settings shows today's count.
+- **`data/` permission errors after upgrading** — the container now runs as a non-root user (uid 1000). If an older install created `data/` as root, run `sudo chown -R 1000:1000 ./data` once and restart.
+
+## Security
+
+jellylook has **no built-in authentication** — it is designed to run on a trusted home LAN. Anyone who can reach the port can trigger scans (which spend your AI provider credits), change app settings, and file Overseerr/Jellyseerr requests.
+
+- **Do not expose the port directly to the internet.** If you want remote access, put it behind a VPN (WireGuard, Tailscale) or a reverse proxy with authentication (e.g. Nginx Proxy Manager, Authelia, Caddy with basic auth).
+- To restrict it to the Docker host only, bind the port to localhost in `docker-compose.yml`: `"127.0.0.1:3045:8000"`.
+- Keep your real `.env` out of version control — it holds all your API keys. The repo's `.gitignore` already excludes it; never force-add it.
 
 ## Privacy
 
