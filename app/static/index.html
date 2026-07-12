@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>jellylook</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <div class="header-center">
+      <span class="wordmark">jellylook</span>
+      <span class="meta" id="last-scan-meta"></span>
+    </div>
+    <div class="header-right">
+      <button class="icon-btn" id="btn-settings" aria-label="Settings" title="Settings">&#9881;</button>
+      <button class="icon-btn" id="btn-help" aria-label="Help" title="Help">?</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="controls" aria-label="Scan controls">
+      <div class="user-row">
+        <div class="chips" id="user-chips" role="group" aria-label="Who's watching"></div>
+        <button class="scan-btn" id="btn-scan" disabled>
+          <span class="scan-label">&#8982; Scan</span>
+        </button>
+      </div>
+      <div class="filter-row">
+        <div class="seg" role="group" aria-label="Filter">
+          <span class="seg-label">Filter</span>
+          <button class="seg-btn is-active" data-filter="all">All</button>
+          <button class="seg-btn" data-filter="tv">TV</button>
+          <button class="seg-btn" data-filter="film">Film</button>
+        </div>
+        <div class="seg" role="group" aria-label="Sort">
+          <span class="seg-label">Sort</span>
+          <select id="sort-select" aria-label="Sort by">
+            <option value="match">Match %</option>
+            <option value="imdb">IMDB</option>
+            <option value="year">Year</option>
+          </select>
+        </div>
+      </div>
+    </section>
+
+    <p class="status-line" id="status-line" role="status" aria-live="polite"></p>
+
+    <section class="grid" id="grid" aria-label="Recommendations"></section>
+
+    <nav class="pager" id="pager" aria-label="Pages"></nav>
+  </main>
+
+  <!-- Season picker modal -->
+  <div class="overlay hidden" id="season-overlay">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="season-title">
+      <h2 id="season-title">Choose seasons</h2>
+      <label class="season-all"><input type="checkbox" id="season-all" /> All seasons</label>
+      <div class="season-list" id="season-list"></div>
+      <div class="modal-actions">
+        <button class="ghost-btn" id="season-cancel">Cancel</button>
+        <button class="primary-btn" id="season-confirm">Add to Seerr</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings panel -->
+  <div class="overlay hidden" id="settings-overlay">
+    <div class="panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div class="panel-head">
+        <h2 id="settings-title">Settings</h2>
+        <button class="icon-btn" data-close="settings-overlay" aria-label="Close settings">&times;</button>
+      </div>
+      <form id="settings-form">
+        <label class="field">Default user(s)
+          <div class="chips" id="settings-user-chips"></div>
+        </label>
+        <label class="field">Recommendations per scan
+          <input type="number" id="set-recs" min="5" max="100" step="5" />
+        </label>
+        <label class="field">TV request mode
+          <select id="set-tvmode">
+            <option value="ask">Ask each time (season picker)</option>
+            <option value="all">Request all seasons</option>
+            <option value="first">Request first season only</option>
+          </select>
+        </label>
+        <div class="field-row">
+          <label class="field">Default sort
+            <select id="set-sort">
+              <option value="match">Match %</option>
+              <option value="imdb">IMDB</option>
+              <option value="year">Year</option>
+            </select>
+          </label>
+          <label class="field">Default filter
+            <select id="set-filter">
+              <option value="all">All</option>
+              <option value="tv">TV</option>
+              <option value="movie">Film</option>
+            </select>
+          </label>
+        </div>
+        <button type="submit" class="primary-btn">Save settings</button>
+        <p class="save-note" id="settings-saved" role="status"></p>
+      </form>
+      <div class="status-block" id="status-block">
+        <h3>Status</h3>
+        <dl id="status-dl"></dl>
+        <p class="muted">API keys live in <code>.env</code> and are never shown here.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Help panel -->
+  <div class="overlay hidden" id="help-overlay">
+    <div class="panel" role="dialog" aria-modal="true" aria-labelledby="help-title">
+      <div class="panel-head">
+        <h2 id="help-title">Help</h2>
+        <button class="icon-btn" data-close="help-overlay" aria-label="Close help">&times;</button>
+      </div>
+      <h3>How a scan works</h3>
+      <p>Pick who's watching and press Scan. jellylook reads their recent watch
+      history from Jellystat, sends one request to your chosen AI provider for a
+      full batch of suggestions, then adds posters and ratings from TMDb and OMDb.
+      Sorting, filtering and paging never trigger another AI call.</p>
+      <h3>What the match % means</h3>
+      <p>It's the AI's own estimate of how close a title sits to your recent
+      viewing, from 0 to 100. Directionally useful, not science.</p>
+      <h3>"Because you watched"</h3>
+      <p>Each suggestion names the specific title in your history that inspired
+      it, so you can see the connection at a glance.</p>
+      <h3>The .env knobs</h3>
+      <p><code>LLM_PROVIDER</code> switches between anthropic, openai, google,
+      openwebui and ollama (with <code>LLM_MODEL</code> for the model name).
+      <code>HISTORY_SOURCE</code> switches between jellystat and jellyfin.
+      <code>RECS_PER_SCAN</code>, <code>PER_PAGE</code> and
+      <code>RETENTION_DAYS</code> control batch size, paging and how long
+      results are kept. Restart the container after changing <code>.env</code>.</p>
+      <h3>Troubleshooting</h3>
+      <p><strong>Source unreachable</strong> — a scan that fails immediately
+      usually means Jellystat or Jellyfin can't be reached or the API key is
+      wrong. Check the container logs.<br />
+      <strong>Seerr down</strong> — cards still render; the Add button is
+      disabled until Seerr answers again.<br />
+      <strong>OMDb limit</strong> — the free key allows 1000 lookups a day.
+      The cache keeps re-scans nearly free; today's count shows in Settings.</p>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
