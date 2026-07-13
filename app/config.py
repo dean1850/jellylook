@@ -10,7 +10,7 @@ from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 VALID_PROVIDERS = {"anthropic", "openai", "google", "openwebui", "ollama"}
-VALID_HISTORY_SOURCES = {"jellystat", "jellyfin"}
+VALID_HISTORY_SOURCES = {"jellystat", "tautulli", "jellyfin"}
 
 
 class Settings(BaseSettings):
@@ -27,11 +27,13 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # history
-    history_source: str = "jellystat"  # jellystat | jellyfin
+    history_source: str = "jellystat"  # jellystat | tautulli | jellyfin
     jellystat_url: str = "http://192.168.1.5:3015"
     jellystat_api_key: str = ""
     jellyfin_url: str = "http://192.168.1.5:8096"
     jellyfin_api_key: str = ""
+    tautulli_url: str = "http://192.168.1.5:8181"
+    tautulli_api_key: str = ""
 
     # requests
     seerr_url: str = "http://192.168.1.5:5055"
@@ -71,7 +73,10 @@ class Settings(BaseSettings):
 
         if self.history_source == "jellystat" and not self.jellystat_api_key:
             problems.append("JELLYSTAT_API_KEY required when HISTORY_SOURCE=jellystat")
-        if not self.jellyfin_api_key:
+        if self.history_source == "tautulli" and not self.tautulli_api_key:
+            problems.append("TAUTULLI_API_KEY required when HISTORY_SOURCE=tautulli")
+        # Tautulli mode is Plex-only: Jellyfin is not required (or used).
+        if self.history_source != "tautulli" and not self.jellyfin_api_key:
             problems.append("JELLYFIN_API_KEY required (ownership + id/poster lookups)")
 
         if self.llm_provider == "anthropic" and not self.anthropic_api_key:

@@ -1,11 +1,12 @@
 """Scan orchestration.
 
 run_scan(user_ids) -> ScanRecord:
-  1. Jellystat history (Jellyfin fallback) for the users
+  1. watch history for the users (Jellystat w/ Jellyfin fallback, or Tautulli)
   2. recency- & play-count-weighted taste profile
   3. ONE LLM call → recs_per_scan suggestions
   4. enrich each via metadata.py (concurrent, semaphore-capped)
-  5. flag is_in_library against the Jellyfin ownership set
+  5. flag is_in_library against the library ownership set (Jellyfin provider
+     ids, or Plex title keys via Tautulli)
   6. drop unresolved / duplicate-of-watched / duplicate suggestions, persist
 
 Partial success beats total failure: if some titles fail enrichment, the rest
@@ -114,6 +115,10 @@ async def run_scan(user_ids: list[str],
         in_library = (
             (meta.imdb_id and meta.imdb_id in owned)
             or (meta.tmdb_id and f"tmdb:{meta.tmdb_id}" in owned)
+            # Plex/Tautulli ownership matches on type+title(+year) — a
+            # missing year on either side still matches the bare-title key.
+            or history.title_key(meta.media_type, meta.title, meta.year) in owned
+            or history.title_key(meta.media_type, meta.title, None) in owned
         )
         recs.append(Recommendation(
             id=uuid.uuid4().hex,

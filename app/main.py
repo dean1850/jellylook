@@ -20,6 +20,9 @@ logging.basicConfig(
     level=getattr(logging, get_settings().log_level.upper(), logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
+# httpx logs full request URLs at INFO — query strings carry API keys
+# (Tautulli/TMDb/OMDb), so keep it at WARNING regardless of LOG_LEVEL.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("jellylook")
 
 STATIC_DIR = Path(__file__).parent / "static"
