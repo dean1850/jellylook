@@ -1,6 +1,6 @@
 <div align="center">
 
-# jellylook
+<img src="app/static/logo.png" alt="jellylook" width="420">
 
 **Self-hosted "what to watch next" for Jellyfin.**
 
