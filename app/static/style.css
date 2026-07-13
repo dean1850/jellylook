@@ -48,15 +48,9 @@ header {
 }
 
 .wordmark {
-  font-family: var(--font-display);
-  font-weight: 700;
-  font-size: 38px;
-  line-height: 1.1;
-  letter-spacing: -0.015em;
-  background: var(--gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  display: block;
+  height: 42px;
+  width: auto;
 }
 
 .header-right {
@@ -355,7 +349,7 @@ input[type="checkbox"] { accent-color: var(--jf-blue); }
   .scan-btn { width: 100%; }
   .field-row { flex-direction: column; gap: 0; }
   header { padding: 18px 16px 14px; }
-  .wordmark { font-size: 30px; }
+  .wordmark { height: 34px; }
   .header-right { top: 18px; right: 16px; transform: none; }
 }
 
