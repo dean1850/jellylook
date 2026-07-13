@@ -126,9 +126,10 @@
       </div>
       <h3>How a scan works</h3>
       <p>Pick who's watching and press Scan. jellylook reads their recent watch
-      history from Jellystat, sends one request to your chosen AI provider for a
-      full batch of suggestions, then adds posters and ratings from TMDb and OMDb.
-      Sorting, filtering and paging never trigger another AI call.</p>
+      history from Jellystat (or Tautulli on a Plex setup), sends one request to
+      your chosen AI provider for a full batch of suggestions, then adds posters
+      and ratings from TMDb and OMDb. Sorting, filtering and paging never
+      trigger another AI call.</p>
       <h3>What the match % means</h3>
       <p>It's the AI's own estimate of how close a title sits to your recent
       viewing, from 0 to 100. Directionally useful, not science.</p>
@@ -138,14 +139,15 @@
       <h3>The .env knobs</h3>
       <p><code>LLM_PROVIDER</code> switches between anthropic, openai, google,
       openwebui and ollama (with <code>LLM_MODEL</code> for the model name).
-      <code>HISTORY_SOURCE</code> switches between jellystat and jellyfin.
+      <code>HISTORY_SOURCE</code> switches between jellystat, tautulli (Plex)
+      and jellyfin.
       <code>RECS_PER_SCAN</code>, <code>PER_PAGE</code> and
       <code>RETENTION_DAYS</code> control batch size, paging and how long
       results are kept. Restart the container after changing <code>.env</code>.</p>
       <h3>Troubleshooting</h3>
       <p><strong>Source unreachable</strong> — a scan that fails immediately
-      usually means Jellystat or Jellyfin can't be reached or the API key is
-      wrong. Check the container logs.<br />
+      usually means the history source (Jellystat, Tautulli or Jellyfin) can't
+      be reached or the API key is wrong. Check the container logs.<br />
       <strong>Seerr down</strong> — cards still render; the Add button is
       disabled until Seerr answers again.<br />
       <strong>OMDb limit</strong> — the free key allows 1000 lookups a day.

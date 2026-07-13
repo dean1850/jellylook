@@ -2,7 +2,7 @@
 
 <img src="app/static/logo.png" alt="jellylook" width="420">
 
-**Self-hosted "what to watch next" for Jellyfin.**
+**Self-hosted "what to watch next" for Jellyfin — and Plex.**
 
 One AI call. Sixty recommendations. Zero subscriptions.
 
@@ -17,7 +17,7 @@ One AI call. Sixty recommendations. Zero subscriptions.
 
 ---
 
-jellylook reads your **recent watch history** from [Jellystat](https://github.com/CyferShepard/Jellystat), asks an AI provider — **one call per scan** — for a batch of similar titles, enriches them with **IMDB (OMDb) + TMDb** ratings and artwork, and shows them as poster cards with a match %, a "Because you watched…" line, and a one-click **Add to Seerr** (Overseerr/Jellyseerr) button.
+jellylook reads your **recent watch history** from [Jellystat](https://github.com/CyferShepard/Jellystat) (Jellyfin) or [Tautulli](https://github.com/Tautulli/Tautulli) (Plex), asks an AI provider — **one call per scan** — for a batch of similar titles, enriches them with **IMDB (OMDb) + TMDb** ratings and artwork, and shows them as poster cards with a match %, a "Because you watched…" line, and a one-click **Add to Seerr** (Overseerr/Jellyseerr) button.
 
 Dark-only, Jellyfin palette. Sort, filter, 20 cards per page. Results are kept for 60 days, then purged automatically.
 
@@ -30,7 +30,7 @@ Dark-only, Jellyfin palette. Sort, filter, 20 cards per page. Results are kept f
 - **Match %** and **"Because you watched \<seed\>"** on every card, so you can see why each title was suggested.
 - **★ IMDB rating** (via OMDb) and TMDb score on every card, with posters and backdrops from TMDb.
 - **Add to Seerr** — movies request in one click, TV opens a season picker. Titles you already own show an "In library" chip instead.
-- **Jellystat is the taste signal**; Jellyfin is used only for the ownership check and as a fallback history source.
+- **Jellystat (or Tautulli) is the taste signal**; Jellyfin is used only for the ownership check and as a fallback history source. On a Plex setup, Tautulli covers users, history and the ownership check by itself — no Jellyfin needed.
 - SQLite storage, metadata cache (keeps you under OMDb's 1,000/day free limit — today's usage shows in Settings), automatic 60-day purge.
 - Single container: FastAPI + vanilla HTML/CSS/JS. No database server, no build step, no telemetry.
 
@@ -43,7 +43,9 @@ Dark-only, Jellyfin palette. Sort, filter, 20 cards per page. Results are kept f
 ## Requirements
 
 - **Docker** with Docker Compose (any recent version — the compose file uses the modern format).
-- A running **Jellyfin** server and a **Jellystat** instance pointed at it.
+- One of:
+  - a running **Jellyfin** server and a **Jellystat** instance pointed at it, **or**
+  - a running **Plex** server and a **Tautulli** instance pointed at it.
 - **Overseerr or Jellyseerr** if you want the Add-to-Seerr button (optional — cards still render without it).
 - Free API keys for **TMDb** and **OMDb**, plus a key for whichever AI provider you choose (or a local Ollama, which needs none).
 
@@ -64,16 +66,29 @@ cp .env.example .env
 
 Open `.env` in an editor and fill in the keys below. Everything else can stay at its default.
 
+**Jellyfin + Jellystat** (default — `HISTORY_SOURCE=jellystat`):
+
 | Key | Where to get it |
 |---|---|
 | `JELLYSTAT_API_KEY` | Jellystat → Settings → API Keys |
 | `JELLYFIN_API_KEY` | Jellyfin → Dashboard → API Keys |
+
+**Plex + Tautulli** (set `HISTORY_SOURCE=tautulli`, un-hash the Tautulli block and hash out (`#`) the Jellystat/Jellyfin lines instead):
+
+| Key | Where to get it |
+|---|---|
+| `TAUTULLI_API_KEY` | Tautulli → Settings → Web Interface → API key |
+
+**Both stacks also need:**
+
+| Key | Where to get it |
+|---|---|
 | `SEERR_API_KEY` | Overseerr/Jellyseerr → Settings → General |
 | `TMDB_API_KEY` | [themoviedb.org](https://www.themoviedb.org/settings/api) — free v3 key |
 | `OMDB_API_KEY` | [omdbapi.com](https://www.omdbapi.com/apikey.aspx) — free, 1,000 lookups/day |
 | one AI key | see the provider table below |
 
-Also update `JELLYSTAT_URL`, `JELLYFIN_URL` and `SEERR_URL` to match your network. **Use LAN IPs, not `localhost`** — these URLs must be reachable *from inside the container*.
+Also update `JELLYSTAT_URL` + `JELLYFIN_URL` (or `TAUTULLI_URL`) and `SEERR_URL` to match your network. **Use LAN IPs, not `localhost`** — these URLs must be reachable *from inside the container*.
 
 ### 3. Choose an AI provider
 
@@ -118,7 +133,7 @@ Secrets live in `.env`. Day-to-day preferences (default users, batch size, TV re
 | `.env` variable | Default | What it does |
 |---|---|---|
 | `JELLYLOOK_PORT` | `3045` | Host port the UI is served on |
-| `HISTORY_SOURCE` | `jellystat` | `jellystat` or `jellyfin` |
+| `HISTORY_SOURCE` | `jellystat` | `jellystat` (Jellyfin), `tautulli` (Plex) or `jellyfin` |
 | `RECS_PER_SCAN` | `60` | Titles requested per scan |
 | `PER_PAGE` | `20` | Cards per page |
 | `RETENTION_DAYS` | `60` | How long results and cache are kept before purge |
@@ -129,10 +144,10 @@ Restart the container after changing `.env`: `docker compose up -d --force-recre
 
 ## How a scan works
 
-1. Recent plays for the selected user(s) are pulled from Jellystat (Jellyfin fallback) and weighted by recency and play count.
+1. Recent plays for the selected user(s) are pulled from Jellystat (Jellyfin fallback) — or from Tautulli on a Plex setup — and weighted by recency and play count.
 2. One request to your AI provider returns the whole batch as JSON — title, year, type, a one-line reason, a 0–100 match estimate, and the watched title it's based on.
 3. Each suggestion is resolved via TMDb (id, poster, backdrop, score) and OMDb (IMDB rating), with every lookup cached.
-4. Titles already in your Jellyfin library are flagged; anything you've already watched is dropped.
+4. Titles already in your library are flagged (Jellyfin matches on IMDb/TMDb ids; Plex matches on title + year via Tautulli); anything you've already watched is dropped.
 5. Results land in SQLite and render 20 per page.
 
 The match % is the model's own similarity estimate — directionally useful, not science.
@@ -140,7 +155,7 @@ The match % is the model's own similarity estimate — directionally useful, not
 ## Troubleshooting
 
 - **Container exits at startup** — jellylook fails fast on missing config and prints exactly which `.env` variables it needs. Check `docker compose logs jellylook`.
-- **No users / scan fails immediately** — Jellystat or Jellyfin is unreachable or the API key is wrong. Both URLs must be reachable *from inside the container* (use LAN IPs, not `localhost`).
+- **No users / scan fails immediately** — the history source (Jellystat, Tautulli or Jellyfin) is unreachable or the API key is wrong. The URLs must be reachable *from inside the container* (use LAN IPs, not `localhost`).
 - **Add to Seerr disabled** — Seerr didn't answer; cards still work and the button returns when Seerr does.
 - **OMDb limit** — the free key allows 1,000 lookups/day. The cache makes re-scans nearly free; Settings shows today's count.
 
@@ -162,4 +177,4 @@ Python 3.12 · FastAPI · httpx · SQLite (WAL) · vanilla HTML/CSS/JS · one Do
 
 ## License
 
-[MIT](LICENSE) — do what you like, no warranty. Not affiliated with Jellyfin, Jellystat, Overseerr/Jellyseerr, TMDb, OMDb, or any AI provider. This product uses the TMDB API but is not endorsed or certified by TMDB.
+[MIT](LICENSE) — do what you like, no warranty. Not affiliated with Jellyfin, Jellystat, Plex, Tautulli, Overseerr/Jellyseerr, TMDb, OMDb, or any AI provider. This product uses the TMDB API but is not endorsed or certified by TMDB.
