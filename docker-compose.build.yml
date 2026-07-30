@@ -1,0 +1,11 @@
+services:
+  jellylook:
+    build: .
+    image: jellylook:local
+    container_name: jellylook
+    env_file: .env
+    ports:
+      - "${JELLYLOOK_PORT:-3045}:8000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
