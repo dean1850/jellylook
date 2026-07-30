@@ -118,7 +118,7 @@ After editing `.env`, apply it with `docker compose up -d --force-recreate`.
 | `TZ` | `Australia/Sydney` | Timezone used for log timestamps |
 | `JELLYLOOK_PORT` | `3045` | Host port the UI is served on |
 | `RETENTION_DAYS` | `60` | How long results and cached metadata are kept before purge |
-| `RECS_PER_SCAN` | `60` | Titles requested per scan. Only used until the database exists — from the first run on, the **Settings** panel value wins, so change the batch size there |
+| `RECS_PER_SCAN` | `60` | Titles requested per scan (5–100). The **Settings** panel overrides it; saving the panel back to this value hands control to `.env` again |
 | `PER_PAGE` | `20` | Cards per page |
 | `LOG_LEVEL` | `INFO` | Container log verbosity — `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
