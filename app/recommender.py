@@ -172,9 +172,9 @@ def _dedupe(suggestions: list[Suggestion],
 
 
 def _recs_per_scan(env_default: int) -> int:
-    """Runtime pref (Settings menu) wins over the .env default."""
+    """A saved Settings-panel value wins; otherwise RECS_PER_SCAN from .env."""
     try:
-        value = int(db.settings_get_all().get("recs_per_scan", env_default))
-        return max(5, min(100, value))
+        return db.clamp_recs_per_scan(
+            db.settings_get_all().get("recs_per_scan", env_default))
     except (ValueError, TypeError):
         return env_default

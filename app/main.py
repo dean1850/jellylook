@@ -98,7 +98,7 @@ async def users():
 
 @app.get("/api/settings")
 async def settings_get():
-    return db.settings_get_all()
+    return db.settings_effective(get_settings().recs_per_scan)
 
 
 _SETTING_CHOICES = {
@@ -117,7 +117,7 @@ def _validate_setting(key: str, value: str) -> str:
         return value
     if key == "recs_per_scan":
         try:
-            return str(max(5, min(100, int(value))))
+            return str(db.clamp_recs_per_scan(value))
         except (ValueError, TypeError):
             raise HTTPException(400, "recs_per_scan must be a number")
     return value  # default_user_ids: free-form id list
@@ -125,15 +125,23 @@ def _validate_setting(key: str, value: str) -> str:
 
 @app.post("/api/settings")
 async def settings_post(payload: dict):
-    allowed = set(db.DEFAULT_SETTINGS)
     # Validate everything first so a bad value can't half-apply the payload.
     validated = {
         str(key): _validate_setting(str(key), str(value))
-        for key, value in payload.items() if key in allowed
+        for key, value in payload.items() if key in db.ALLOWED_SETTINGS
+    }
+    env_defaults = {
+        "recs_per_scan": str(db.clamp_recs_per_scan(get_settings().recs_per_scan)),
     }
     for key, value in validated.items():
-        db.settings_set(key, value)
-    return db.settings_get_all()
+        # Saving an env-backed setting at its .env value hands control back to
+        # .env, so routinely saving the panel can't silently pin the value and
+        # make a later .env edit look ignored.
+        if key in db.ENV_BACKED_SETTINGS and value == env_defaults.get(key):
+            db.settings_clear(key)
+        else:
+            db.settings_set(key, value)
+    return db.settings_effective(get_settings().recs_per_scan)
 
 
 # --- scan -----------------------------------------------------------------------

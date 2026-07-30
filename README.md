@@ -8,8 +8,8 @@ One AI call. Sixty recommendations. Zero subscriptions.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-00A4DC.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-AA5CC3.svg)](https://www.python.org/)
-[![Docker](https://img.shields.io/badge/Docker-single%20container-00A4DC.svg)](docker-compose.yml)
-[![FastAPI](https://img.shields.io/badge/FastAPI-async-AA5CC3.svg)](https://fastapi.tiangolo.com/)
+[![ghcr.io](https://img.shields.io/badge/ghcr.io-dean1850%2Fjellylook-00A4DC.svg)](https://github.com/dean1850/jellylook/pkgs/container/jellylook)
+[![Build](https://github.com/dean1850/jellylook/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/dean1850/jellylook/actions/workflows/docker-publish.yml)
 
 <img src="docs/screenshot-desktop.png" alt="jellylook main view — poster grid with match percentages, IMDB ratings and Add to Seerr buttons" width="850">
 
@@ -25,6 +25,7 @@ Dark-only, Jellyfin palette. Sort, filter, 20 cards per page. Results are kept f
 
 ## Features
 
+- **No build step** — a prebuilt multi-arch image is published to `ghcr.io/dean1850/jellylook`. Runs on x86 and on ARM (Raspberry Pi, Synology, QNAP).
 - **Pick your AI** — Anthropic (Claude), OpenAI, Google AI (Gemini), Open WebUI, or Ollama. Switch with one line in `.env`; run fully local with Ollama if you like.
 - **One AI call per scan** returns the whole batch (default 60). Sorting, filtering, paging and Seerr requests never trigger another call.
 - **Match %** and **"Because you watched \<seed\>"** on every card, so you can see why each title was suggested.
@@ -32,7 +33,7 @@ Dark-only, Jellyfin palette. Sort, filter, 20 cards per page. Results are kept f
 - **Add to Seerr** — movies request in one click, TV opens a season picker. Titles you already own show an "In library" chip instead.
 - **Jellystat (or Tautulli) is the taste signal**; Jellyfin is used only for the ownership check and as a fallback history source. On a Plex setup, Tautulli covers users, history and the ownership check by itself — no Jellyfin needed.
 - SQLite storage, metadata cache (keeps you under OMDb's 1,000/day free limit — today's usage shows in Settings), automatic 60-day purge.
-- Single container: FastAPI + vanilla HTML/CSS/JS. No database server, no build step, no telemetry.
+- Single container: FastAPI + vanilla HTML/CSS/JS. No database server, no telemetry.
 
 ## Screenshots
 
@@ -49,74 +50,132 @@ Dark-only, Jellyfin palette. Sort, filter, 20 cards per page. Results are kept f
 - **Overseerr or Jellyseerr** if you want the Add-to-Seerr button (optional — cards still render without it).
 - Free API keys for **TMDb** and **OMDb**, plus a key for whichever AI provider you choose (or a local Ollama, which needs none).
 
-## Installation
+## Quick start
 
-### 1. Get the code
+No clone, no build — you need two files.
 
-```bash
-git clone https://github.com/<your-username>/jellylook.git
-cd jellylook
-```
-
-### 2. Create your `.env`
+### 1. Create a folder and fetch the files
 
 ```bash
-cp .env.example .env
+mkdir jellylook && cd jellylook
+curl -O https://raw.githubusercontent.com/dean1850/jellylook/main/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/dean1850/jellylook/main/.env.example
 ```
 
-Open `.env` in an editor and fill in the keys below. Everything else can stay at its default.
+### 2. Fill in `.env`
 
-**Jellyfin + Jellystat** (default — `HISTORY_SOURCE=jellystat`):
+Open `.env` in an editor. The minimum you must set depends on your media server:
 
-| Key | Where to get it |
-|---|---|
-| `JELLYSTAT_API_KEY` | Jellystat → Settings → API Keys |
-| `JELLYFIN_API_KEY` | Jellyfin → Dashboard → API Keys |
+| Your setup | `HISTORY_SOURCE` | Keys you must fill in |
+|---|---|---|
+| Jellyfin + Jellystat | `jellystat` (default) | `JELLYSTAT_API_KEY`, `JELLYFIN_API_KEY` |
+| Plex + Tautulli | `tautulli` | `TAUTULLI_API_KEY` |
+| Jellyfin only | `jellyfin` | `JELLYFIN_API_KEY` |
 
-**Plex + Tautulli** (set `HISTORY_SOURCE=tautulli`, un-hash the Tautulli block and hash out (`#`) the Jellystat/Jellyfin lines instead):
+Everyone also needs `TMDB_API_KEY`, `OMDB_API_KEY` and one AI provider key. `SEERR_API_KEY` is optional. Full list of every setting is in [Configuration](#configuration) below.
 
-| Key | Where to get it |
-|---|---|
-| `TAUTULLI_API_KEY` | Tautulli → Settings → Web Interface → API key |
+Then point the URLs at your servers — `JELLYSTAT_URL`, `JELLYFIN_URL` (or `TAUTULLI_URL`) and `SEERR_URL`. **Use LAN IPs, not `localhost`** — these URLs are dialled from *inside* the container, where `localhost` is the container itself.
 
-**Both stacks also need:**
+Settings you don't use can stay at their placeholder values; jellylook only reads the ones your `HISTORY_SOURCE` and `LLM_PROVIDER` select.
 
-| Key | Where to get it |
-|---|---|
-| `SEERR_API_KEY` | Overseerr/Jellyseerr → Settings → General |
-| `TMDB_API_KEY` | [themoviedb.org](https://www.themoviedb.org/settings/api) — free v3 key |
-| `OMDB_API_KEY` | [omdbapi.com](https://www.omdbapi.com/apikey.aspx) — free, 1,000 lookups/day |
-| one AI key | see the provider table below |
+### 3. Start it
 
-Also update `JELLYSTAT_URL` + `JELLYFIN_URL` (or `TAUTULLI_URL`) and `SEERR_URL` to match your network. **Use LAN IPs, not `localhost`** — these URLs must be reachable *from inside the container*.
+```bash
+docker compose up -d
+```
 
-### 3. Choose an AI provider
+jellylook fails fast on missing configuration and prints exactly which `.env` variables it still needs — if the container exits immediately, run `docker compose logs jellylook` and it will tell you what to fix.
 
-Set `LLM_PROVIDER` and `LLM_MODEL`, plus the matching key:
+### 4. Open it
+
+Go to `http://<your-host>:3045`, tick who's watching, and press **Scan**. The first scan takes a minute or so (one AI call plus metadata lookups for ~60 titles); everything after that — sorting, filtering, paging, Seerr requests — is instant and free.
+
+## Updating
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Your SQLite database lives in `./data` next to the compose file and survives updates. To pin a specific release instead of tracking `latest`, change the tag in `docker-compose.yml`:
+
+```yaml
+image: ghcr.io/dean1850/jellylook:1.0.0
+```
+
+Available tags: `latest` (newest build of `main`), `sha-abc1234` (an exact commit), and — once a release is tagged — `1.0.0` / `1.0`.
+
+## Configuration
+
+Secrets and startup options live in `.env`. Day-to-day preferences (default users, batch size, TV request mode, default sort/filter) are edited in the app's **Settings** panel and stored in SQLite — those take effect immediately, no restart.
+
+After editing `.env`, apply it with `docker compose up -d --force-recreate`.
+
+### Core
+
+| Variable | Default | What it does |
+|---|---|---|
+| `TZ` | `Australia/Sydney` | Timezone used for log timestamps |
+| `JELLYLOOK_PORT` | `3045` | Host port the UI is served on |
+| `RETENTION_DAYS` | `60` | How long results and cached metadata are kept before purge |
+| `RECS_PER_SCAN` | `60` | Titles requested per scan (5–100). The **Settings** panel overrides it; saving the panel back to this value hands control to `.env` again |
+| `PER_PAGE` | `20` | Cards per page |
+| `LOG_LEVEL` | `INFO` | Container log verbosity — `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
+### Watch-history source
+
+`HISTORY_SOURCE` picks your media-server stack. Only the block for the source you choose is used; the rest is ignored.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `HISTORY_SOURCE` | `jellystat` | `jellystat` (Jellyfin + Jellystat), `tautulli` (Plex + Tautulli), or `jellyfin` (Jellyfin alone, no Jellystat) |
+| `JELLYSTAT_URL` | `http://192.168.1.5:3015` | Your Jellystat address |
+| `JELLYSTAT_API_KEY` | — | Jellystat → Settings → API Keys |
+| `JELLYFIN_URL` | `http://192.168.1.5:8096` | Your Jellyfin address |
+| `JELLYFIN_API_KEY` | — | Jellyfin → Dashboard → API Keys. Used for the library ownership check and as an id/poster fallback |
+| `TAUTULLI_URL` | `http://192.168.1.5:8181` | Your Tautulli address |
+| `TAUTULLI_API_KEY` | — | Tautulli → Settings → Web Interface → API key |
+
+On Plex (`tautulli`), Tautulli supplies users, history *and* the ownership check — no Jellyfin keys are needed and the Jellyfin lines are ignored.
+
+### Requests (Overseerr / Jellyseerr)
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SEERR_URL` | `http://192.168.1.5:5055` | Your Overseerr or Jellyseerr address |
+| `SEERR_API_KEY` | — | Overseerr/Jellyseerr → Settings → General. Optional; without it the Add-to-Seerr button stays disabled |
+
+### AI provider
+
+Set `LLM_PROVIDER` and `LLM_MODEL`, then fill in **only** the keys for that provider — the others can stay blank.
 
 | `LLM_PROVIDER` | Needs | Example `LLM_MODEL` |
 |---|---|---|
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-haiku-4-5` |
 | `openai` | `OPENAI_API_KEY` (+ optional `OPENAI_BASE_URL`) | `gpt-4o-mini` |
-| `google` | `GOOGLE_API_KEY` | `gemini-2.0-flash` |
+| `google` | `GOOGLE_API_KEY` — from [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `gemini-2.0-flash` |
 | `openwebui` | `OPENWEBUI_API_KEY` + `OPENWEBUI_BASE_URL` | whatever your instance serves |
 | `ollama` | `OLLAMA_BASE_URL` only — no key | `qwen3:14b` |
 
-Open WebUI uses its OpenAI-compatible endpoint (`{OPENWEBUI_BASE_URL}/api/chat/completions`) — create an API key under your Open WebUI account settings.
+| Variable | Default | What it does |
+|---|---|---|
+| `LLM_PROVIDER` | `anthropic` | `anthropic`, `openai`, `google`, `openwebui` or `ollama` |
+| `LLM_MODEL` | `claude-haiku-4-5` | Model name, as your provider spells it |
+| `LLM_TEMPERATURE` | `0.7` | Creativity of the suggestions — lower is safer, higher is more adventurous |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Point at any OpenAI-compatible endpoint (LM Studio, LiteLLM, vLLM…) |
+| `OPENWEBUI_BASE_URL` | `http://192.168.1.6:8080` | Your Open WebUI address; the key comes from your Open WebUI account settings |
+| `OLLAMA_BASE_URL` | `http://192.168.1.6:11434` | Your Ollama address |
 
-### 4. Build and start
+Open WebUI is called through its OpenAI-compatible endpoint (`{OPENWEBUI_BASE_URL}/api/chat/completions`).
 
-```bash
-docker compose up --build -d
-```
+### Ratings and artwork
 
-jellylook fails fast on missing configuration and prints exactly which `.env` variables it still needs — if the container exits immediately, run `docker compose logs jellylook` and it will tell you what to fix.
+| Variable | Default | What it does |
+|---|---|---|
+| `TMDB_API_KEY` | — | Free v3 key from [themoviedb.org](https://www.themoviedb.org/settings/api). Supplies ids, posters, backdrops and scores |
+| `OMDB_API_KEY` | — | Free key from [omdbapi.com](https://www.omdbapi.com/apikey.aspx) — 1,000 lookups/day. Supplies IMDB ratings |
 
-### 5. Open it
-
-Go to `http://<your-host>:3045`, tick who's watching, and press **Scan**. The first scan takes a minute or so (one AI call plus metadata lookups for ~60 titles); everything after that — sorting, filtering, paging, Seerr requests — is instant and free.
-
-### Verifying the install (optional)
+## Verifying the install
 
 With a filled `.env`:
 
@@ -126,21 +185,22 @@ docker compose run --rm jellylook python -m app.selftest
 
 This enriches a known title through TMDb + OMDb, proves the cache works, and asks your active AI provider for 5 sample recommendations.
 
-## Configuration reference
+## Building from source
 
-Secrets live in `.env`. Day-to-day preferences (default users, batch size, TV request mode, default sort/filter) are edited in the app's **Settings** panel and stored in SQLite — no restart needed for those.
+Contributors and anyone who'd rather not pull a prebuilt image can build locally:
 
-| `.env` variable | Default | What it does |
-|---|---|---|
-| `JELLYLOOK_PORT` | `3045` | Host port the UI is served on |
-| `HISTORY_SOURCE` | `jellystat` | `jellystat` (Jellyfin), `tautulli` (Plex) or `jellyfin` |
-| `RECS_PER_SCAN` | `60` | Titles requested per scan |
-| `PER_PAGE` | `20` | Cards per page |
-| `RETENTION_DAYS` | `60` | How long results and cache are kept before purge |
-| `LLM_TEMPERATURE` | `0.7` | Creativity of the AI suggestions |
-| `LOG_LEVEL` | `INFO` | Container log verbosity |
+```bash
+git clone https://github.com/dean1850/jellylook.git
+cd jellylook
+cp .env.example .env      # then fill it in
+docker compose -f docker-compose.build.yml up -d --build
+```
 
-Restart the container after changing `.env`: `docker compose up -d --force-recreate`.
+`docker-compose.build.yml` is identical to the published one except it builds from the Dockerfile instead of pulling from ghcr.io.
+
+Every push to `main` runs [the workflow](.github/workflows/docker-publish.yml), which boots the freshly built image and checks its health endpoint, UI and API before publishing `linux/amd64` and `linux/arm64` images. Tagging a release (`git tag v1.2.3 && git push --tags`) publishes `1.2.3` and `1.2` alongside `latest`.
+
+> Forking this repo? The published package inherits your fork's visibility, so a public fork publishes a publicly pullable image with no extra steps. If a fork's package does come out private, open Packages → jellylook → Package settings → Change visibility → Public, or `docker compose pull` fails with `denied` for everyone but you.
 
 ## How a scan works
 
@@ -154,10 +214,12 @@ The match % is the model's own similarity estimate — directionally useful, not
 
 ## Troubleshooting
 
+- **`docker compose pull` says `denied` / `unauthorized`** — the image you're pulling is a private package. `ghcr.io/dean1850/jellylook` is public and needs no login; on a fork, check your own package's visibility (see [Building from source](#building-from-source)).
 - **Container exits at startup** — jellylook fails fast on missing config and prints exactly which `.env` variables it needs. Check `docker compose logs jellylook`.
 - **No users / scan fails immediately** — the history source (Jellystat, Tautulli or Jellyfin) is unreachable or the API key is wrong. The URLs must be reachable *from inside the container* (use LAN IPs, not `localhost`).
 - **Add to Seerr disabled** — Seerr didn't answer; cards still work and the button returns when Seerr does.
 - **OMDb limit** — the free key allows 1,000 lookups/day. The cache makes re-scans nearly free; Settings shows today's count.
+- **`exec format error`** — you're on hardware the image wasn't built for. The published image covers `linux/amd64` and `linux/arm64`; 32-bit ARM (older Raspberry Pi OS) needs a local build.
 
 ## Security
 

@@ -1,6 +1,6 @@
 services:
   jellylook:
-    build: .
+    image: ghcr.io/dean1850/jellylook:latest
     container_name: jellylook
     env_file: .env
     ports:

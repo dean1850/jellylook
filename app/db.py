@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS omdb_usage (
   day TEXT PRIMARY KEY, count INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS schema_meta (
+  key TEXT PRIMARY KEY, value TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_rec_created  ON recommendations(created_at);
 CREATE INDEX IF NOT EXISTS idx_rec_scan     ON recommendations(scan_id);
 CREATE INDEX IF NOT EXISTS idx_scan_created ON scans(created_at);
@@ -51,11 +55,34 @@ CREATE INDEX IF NOT EXISTS idx_meta_fetched ON metadata_cache(fetched_at);
 
 DEFAULT_SETTINGS = {
     "default_user_ids": "",
-    "recs_per_scan": "60",
     "tv_request_mode": "ask",   # ask | all | first
     "default_sort": "match",    # match | imdb | year
     "default_filter": "all",    # all | movie | tv
 }
+
+# Settings whose default comes from .env rather than from DEFAULT_SETTINGS.
+# They are deliberately NOT seeded: a missing row means "use the .env value",
+# and a row exists only once the user saves one in the Settings panel.
+ENV_BACKED_SETTINGS = {"recs_per_scan"}
+
+ALLOWED_SETTINGS = set(DEFAULT_SETTINGS) | ENV_BACKED_SETTINGS
+
+# recs_per_scan used to be seeded at this value, which made RECS_PER_SCAN in
+# .env dead config. Dropping that row once lets .env through again.
+_LEGACY_SEEDED_RECS_PER_SCAN = "60"
+
+RECS_PER_SCAN_MIN = 5
+RECS_PER_SCAN_MAX = 100
+
+
+def clamp_recs_per_scan(value: object) -> int:
+    """Coerce a batch size into the supported range.
+
+    Raises ValueError/TypeError for anything non-numeric so callers can decide
+    between rejecting the input and falling back to a default.
+    """
+    return max(RECS_PER_SCAN_MIN, min(RECS_PER_SCAN_MAX, int(value)))
+
 
 SORT_SQL = {
     "match": "match_score DESC NULLS LAST, imdb_rating DESC NULLS LAST",
@@ -99,6 +126,29 @@ def init_db() -> None:
             conn.execute(
                 "INSERT OR IGNORE INTO app_settings(key, value) VALUES (?, ?)", (k, v)
             )
+        _migrate_unseed_recs_per_scan(conn)
+
+
+def _migrate_unseed_recs_per_scan(conn: sqlite3.Connection) -> None:
+    """Drop the auto-seeded recs_per_scan row so RECS_PER_SCAN applies again.
+
+    Runs exactly once (guarded by schema_meta), and only removes the value the
+    old code seeded — a value the user chose themselves is left alone unless it
+    happens to equal that seed, in which case .env takes over.
+    """
+    marker = "unseed_recs_per_scan"
+    done = conn.execute(
+        "SELECT 1 FROM schema_meta WHERE key = ?", (marker,)
+    ).fetchone()
+    if done:
+        return
+    conn.execute(
+        "DELETE FROM app_settings WHERE key = 'recs_per_scan' AND value = ?",
+        (_LEGACY_SEEDED_RECS_PER_SCAN,),
+    )
+    conn.execute(
+        "INSERT INTO schema_meta(key, value) VALUES (?, ?)", (marker, _utcnow())
+    )
 
 
 def purge_old(retention_days: int) -> dict:
@@ -118,9 +168,27 @@ def purge_old(retention_days: int) -> dict:
 
 # --- settings ----------------------------------------------------------------
 def settings_get_all() -> dict:
+    """Stored settings only — an env-backed key is absent until it is saved."""
     with _conn() as conn:
         rows = conn.execute("SELECT key, value FROM app_settings").fetchall()
     return {row["key"]: row["value"] for row in rows}
+
+
+def settings_effective(recs_per_scan: int) -> dict:
+    """Stored settings with .env filling in the env-backed keys.
+
+    This is what the UI shows, so the Settings panel displays the value a scan
+    would actually use rather than a hard-coded placeholder.
+    """
+    values = settings_get_all()
+    values.setdefault("recs_per_scan", str(clamp_recs_per_scan(recs_per_scan)))
+    return values
+
+
+def settings_clear(key: str) -> None:
+    """Remove a stored override so its .env default applies again."""
+    with _conn() as conn:
+        conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
 
 
 def settings_set(key: str, value: str) -> None:
