@@ -103,7 +103,7 @@ Your SQLite database lives in `./data` next to the compose file and survives upd
 image: ghcr.io/dean1850/jellylook:1.0.0
 ```
 
-Available tags: `latest` (newest build of `main`), `1.0.0` / `1.0` (releases), and `sha-abc1234` (an exact commit).
+Available tags: `latest` (newest build of `main`), `sha-abc1234` (an exact commit), and — once a release is tagged — `1.0.0` / `1.0`.
 
 ## Configuration
 
@@ -118,7 +118,7 @@ After editing `.env`, apply it with `docker compose up -d --force-recreate`.
 | `TZ` | `Australia/Sydney` | Timezone used for log timestamps |
 | `JELLYLOOK_PORT` | `3045` | Host port the UI is served on |
 | `RETENTION_DAYS` | `60` | How long results and cached metadata are kept before purge |
-| `RECS_PER_SCAN` | `60` | Titles requested per scan (also adjustable in Settings) |
+| `RECS_PER_SCAN` | `60` | Titles requested per scan. Only used until the database exists — from the first run on, the **Settings** panel value wins, so change the batch size there |
 | `PER_PAGE` | `20` | Cards per page |
 | `LOG_LEVEL` | `INFO` | Container log verbosity — `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
@@ -200,7 +200,7 @@ docker compose -f docker-compose.build.yml up -d --build
 
 Every push to `main` runs [the workflow](.github/workflows/docker-publish.yml), which boots the freshly built image and checks its health endpoint, UI and API before publishing `linux/amd64` and `linux/arm64` images. Tagging a release (`git tag v1.2.3 && git push --tags`) publishes `1.2.3` and `1.2` alongside `latest`.
 
-> Forking this repo? Your fork's first image lands as a **private** package. Open your fork's Packages tab → jellylook → Package settings → Change visibility → Public, or `docker compose pull` will fail with `denied` for everyone but you.
+> Forking this repo? The published package inherits your fork's visibility, so a public fork publishes a publicly pullable image with no extra steps. If a fork's package does come out private, open Packages → jellylook → Package settings → Change visibility → Public, or `docker compose pull` fails with `denied` for everyone but you.
 
 ## How a scan works
 
@@ -214,7 +214,7 @@ The match % is the model's own similarity estimate — directionally useful, not
 
 ## Troubleshooting
 
-- **`docker compose pull` says `denied` / `unauthorized`** — the package is private. On this repo it is public; on a fork, make your own package public (see [Building from source](#building-from-source)).
+- **`docker compose pull` says `denied` / `unauthorized`** — the image you're pulling is a private package. `ghcr.io/dean1850/jellylook` is public and needs no login; on a fork, check your own package's visibility (see [Building from source](#building-from-source)).
 - **Container exits at startup** — jellylook fails fast on missing config and prints exactly which `.env` variables it needs. Check `docker compose logs jellylook`.
 - **No users / scan fails immediately** — the history source (Jellystat, Tautulli or Jellyfin) is unreachable or the API key is wrong. The URLs must be reachable *from inside the container* (use LAN IPs, not `localhost`).
 - **Add to Seerr disabled** — Seerr didn't answer; cards still work and the button returns when Seerr does.
