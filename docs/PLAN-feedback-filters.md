@@ -1,13 +1,12 @@
 # jellylook — implementation plan: feedback, filters, history, richer cards
 
-Status: **proposal, not implemented.** No application code changes accompany this
-document.
-
-This plan covers three phases agreed during planning:
+Status: **implemented.** All three phases shipped together. This document is
+kept as the design record; where the build diverged from the plan, it is noted
+inline and summarised under [Divergences](#divergences-from-the-plan).
 
 | Phase | Theme | Ships |
 |---|---|---|
-| 1 | Smarter picks | 👍/👎 feedback, permanent exclusion, prompt teaching, cross-scan dedupe |
+| 1 | Smarter picks | ♡/✕ feedback, permanent exclusion, prompt teaching, cross-scan dedupe |
 | 2 | Filters + history | Genre/decade/runtime/rating filters, "all time" pool, scan picker |
 | 3 | Richer cards | Where-to-watch (TMDb/JustWatch) and trailers |
 
@@ -18,7 +17,8 @@ Constraints fixed up front:
   and deliberately dropped.
 - **No new runtime Python dependencies.** `requirements.txt` stays at five lines.
   (`pytest` is proposed as a *dev* dependency only — see §5.)
-- **Feedback is household-wide**, not per media-server user.
+- ~~**Feedback is household-wide**, not per media-server user.~~ **Changed
+  before implementation to per-user** — see [Divergences](#divergences-from-the-plan).
 - Everything must remain free and legal for self-hosted, non-commercial use.
 
 ---
@@ -455,19 +455,62 @@ None of it needs network access or an API key.
 
 ---
 
-## 7. Open questions
+## 7. Divergences from the plan
 
-1. **Two verdicts or three?** §1.2 argues 🚫 is redundant with 👎 under
-   household-wide scope and recommends dropping it. Confirm, or specify what 🚫
-   should do that 👎 does not.
-2. **Should 👍 imply a Seerr request?** A saved title you don't own is a strong
-   signal you want it. Auto-requesting on 👍 is convenient but spends
-   Seerr/download capacity without a confirmation step. Default proposed: **no**,
-   with the Saved view offering a bulk "Request all" action instead.
-3. **`TMDB_REGION` default** — `AU` (matching the existing `TZ` default) or the
-   more conventional `US`?
-4. **Does the "all time" view need its own retention?** Currently one
-   `RETENTION_DAYS` governs scans, recommendations and the metadata cache. A
-   longer horizon for the pool would mean a second knob.
-5. **Ordering of phase 3.** It is the smallest and most visible change. Worth
-   pulling ahead of phase 2 for a quicker visible win?
+Four things changed between this document and the shipped code.
+
+**1. Feedback is per media-server user, not household-wide.** Requested after
+the plan was written. `feedback`'s primary key became
+`(user_id, media_type, tmdb_id)`, and every read takes the list of currently
+selected users. The design question the plan didn't have to answer — *whose*
+opinion is a click? — is settled without adding a setting: a verdict is
+attributed to whoever is ticked in *who's watching*, the same selection a scan
+runs for. Reads union across the selected users, with `hidden` outranking
+`saved` so one viewer's veto wins in a shared session.
+
+**2. A one-year hard purge ceiling was added.** The plan exempted saved rows
+from the retention purge, which left a long-running instance able to grow
+without bound. `MAX_RETENTION_DAYS` (365) is now an absolute second stage that
+exempts nothing. The `feedback` table stays exempt from both — it is tiny, and
+expiring it would resurrect rejected titles.
+
+**3. Two verdicts, as recommended in §1.2.** The 🚫 button was dropped; ♡ and ✕
+are the whole vocabulary. The `verdict` column is an open enum, so a third value
+remains cheap.
+
+**4. `NoSuggestions` was added.** Found during end-to-end testing: when the
+exclude list leaves a model nothing to propose, the scan used to surface
+`RuntimeError` as *"Unexpected error"*. It is now a `ScanError` naming the
+provider and pointing at `EXCLUDE_BUDGET`.
+
+Everything else — the exclusion budget allocator, the window-function all-time
+pool, the NULL-handling split between numeric and genre filters, facets computed
+before the genre filter, `append_to_response`, the JustWatch attribution, and
+link-out trailers — shipped as described.
+
+Testing went further than §5 proposed: 84 unit tests plus 22 Playwright tests
+that drive the real app against mocked upstreams. Bugs they caught:
+`.filters-toggle`'s `display:inline-flex` defeating the `hidden` attribute, the
+view tabs overflowing a 390px viewport, and the card rating row clipping its
+last chip on mobile.
+
+## 8. Open questions
+
+Resolved during implementation:
+
+1. ~~Two verdicts or three?~~ **Two.** See divergence 3.
+2. ~~`TMDB_REGION` default?~~ **`AU`**, matching the existing `TZ` default.
+3. ~~Does the all-time view need its own retention?~~ **No** — `MAX_RETENTION_DAYS`
+   turned out to be the knob that mattered.
+4. ~~Ordering of phase 3?~~ Moot; all three shipped together.
+
+Still open:
+
+- **Should ♡ imply a Seerr request?** A saved title you don't own is a strong
+  signal you want it. Auto-requesting is convenient but spends download capacity
+  with no confirmation step. Shipped as **no**; a bulk "Request all" action on
+  the Saved view is the obvious next step if it's wanted.
+- **Should the taste blocks decay?** A rejection from a year ago currently
+  carries the same weight as yesterday's. Time-weighting them, or capping the
+  taste block to the most recent N months, would stop stale opinions from
+  steering current picks.

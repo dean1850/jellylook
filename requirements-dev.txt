@@ -1,0 +1,4 @@
+# Test-only dependencies. The runtime image installs requirements.txt alone.
+pytest==8.4.2
+pytest-asyncio==1.2.0
+playwright==1.56.0

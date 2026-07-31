@@ -74,15 +74,34 @@ async def run_scan(user_ids: list[str],
                         "Check the history source connection and API key.")
     step("history", f"{len(watched)} watched titles")
 
-    # 2. profile + exclude set
+    # 2. profile + exclusion signals
     profile = build_profile(watched)
     watched_titles = {w.title.strip().lower() for w in watched}
+
+    # Feedback is per media-server user; a scan for several people unions their
+    # lists, so one viewer's rejection removes the title for the group.
+    hidden_keys = db.hidden_ids(user_ids)
+    disliked = db.feedback_titles(user_ids, "hidden", llm.MAX_TASTE_EXAMPLES)
+    liked = db.feedback_titles(user_ids, "saved", llm.MAX_TASTE_EXAMPLES)
+    exclude = llm.build_exclude_list(
+        hidden=disliked,
+        watched=[f"{w.title} ({w.year})" if w.year else w.title for w in watched],
+        suggested=db.recent_suggested_titles(s.exclude_budget),
+        budget=s.exclude_budget,
+    )
+    if liked or disliked:
+        step("history", f"{len(liked)} liked / {len(disliked)} rejected on file")
 
     # 3. ONE LLM call
     n = _recs_per_scan(s.recs_per_scan)
     step("llm", f"asking {s.llm_provider}/{s.llm_model} for {n} titles")
     provider = llm.get_provider(s)
-    suggestions = await provider.recommend(profile, n, watched_titles)
+    try:
+        suggestions = await provider.recommend(profile, n, exclude, liked, disliked)
+    except llm.NoSuggestions as exc:
+        # A provider that answers with nothing is a configuration or prompt-size
+        # problem, not a crash — say so rather than showing a stack-trace string.
+        raise ScanError(str(exc)) from exc
     step("llm", f"{len(suggestions)} suggestions returned")
 
     # Drop duplicates and anything matching a watched title.
@@ -100,6 +119,7 @@ async def run_scan(user_ids: list[str],
 
     recs: list[Recommendation] = []
     seen_ids: set[str] = set()
+    suppressed = 0
     for sug, meta in zip(suggestions, metas):
         if isinstance(meta, Exception):
             log.warning("enrich failed for %s: %s", sug.title, meta)
@@ -109,6 +129,13 @@ async def run_scan(user_ids: list[str],
             continue
         # Post-enrichment dedupe (two suggestions can resolve to one title).
         id_key = f"{meta.media_type}:{meta.tmdb_id}"
+        # The prompt's exclude list is advisory — models return hidden titles
+        # anyway. This is the enforcement point, and the only one that can be
+        # correct: it runs after TMDb has resolved the title to an identity,
+        # so it cannot be fooled by punctuation or a same-named remake.
+        if id_key in hidden_keys:
+            suppressed += 1
+            continue
         if id_key in seen_ids or (meta.title.strip().lower() in watched_titles):
             continue
         seen_ids.add(id_key)
@@ -139,7 +166,19 @@ async def run_scan(user_ids: list[str],
             match_score=sug.match_score,
             because_of=sug.because_of,
             is_in_library=bool(in_library),
+            genre_ids=meta.genre_ids,
+            runtime=meta.runtime,
+            original_language=meta.original_language,
+            popularity=meta.popularity,
+            trailer_key=meta.trailer_key,
+            providers=meta.providers,
         ))
+
+    if suppressed:
+        # Worth seeing: a consistently high number means the taste blocks are
+        # not landing and the model keeps re-proposing rejected titles.
+        log.info("suppressed %d suggestion(s) previously hidden by these users",
+                 suppressed)
 
     if not recs:
         raise ScanError("The scan produced no usable recommendations. "

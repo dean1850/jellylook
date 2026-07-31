@@ -19,7 +19,7 @@ One AI call. Sixty recommendations. Zero subscriptions.
 
 jellylook reads your **recent watch history** from [Jellystat](https://github.com/CyferShepard/Jellystat) (Jellyfin) or [Tautulli](https://github.com/Tautulli/Tautulli) (Plex), asks an AI provider — **one call per scan** — for a batch of similar titles, enriches them with **IMDB (OMDb) + TMDb** ratings and artwork, and shows them as poster cards with a match %, a "Because you watched…" line, and a one-click **Add to Seerr** (Overseerr/Jellyseerr) button.
 
-Dark-only, Jellyfin palette. Sort, filter, 20 cards per page. Results are kept for 60 days, then purged automatically.
+Tell it what you liked and what you didn't, and the next scan listens. Dark-only, Jellyfin palette. Results are kept for 60 days, then purged automatically.
 
 > The screenshots on this page use fictional demo titles and generated artwork — your instance shows real posters from TMDb.
 
@@ -28,18 +28,39 @@ Dark-only, Jellyfin palette. Sort, filter, 20 cards per page. Results are kept f
 - **No build step** — a prebuilt multi-arch image is published to `ghcr.io/dean1850/jellylook`. Runs on x86 and on ARM (Raspberry Pi, Synology, QNAP).
 - **Pick your AI** — Anthropic (Claude), OpenAI, Google AI (Gemini), Open WebUI, or Ollama. Switch with one line in `.env`; run fully local with Ollama if you like.
 - **One AI call per scan** returns the whole batch (default 60). Sorting, filtering, paging and Seerr requests never trigger another call.
+- **It learns** — ♡ save a title or ✕ hide it. Hidden titles never come back, and both lists are shown to the AI on the next scan as liked and rejected examples. [More below](#teaching-it-what-you-like).
+- **Feedback is per viewer** — two people on one server keep separate taste, with no extra setup: a verdict belongs to whoever is ticked in *who's watching*.
+- **Where to watch** — streaming availability per card for your region, plus a trailer link. Both come from TMDb, so there's no extra API key.
+- **Real filters** — genre (with live counts), decade, runtime, minimum IMDB, hide what you already own, hide what you've already requested, or show only what you can't already stream.
+- **Latest scan or all time** — browse one batch, or every title suggested inside the retention window, deduplicated and newest-first.
 - **Match %** and **"Because you watched \<seed\>"** on every card, so you can see why each title was suggested.
-- **★ IMDB rating** (via OMDb) and TMDb score on every card, with posters and backdrops from TMDb.
 - **Add to Seerr** — movies request in one click, TV opens a season picker. Titles you already own show an "In library" chip instead.
 - **Jellystat (or Tautulli) is the taste signal**; Jellyfin is used only for the ownership check and as a fallback history source. On a Plex setup, Tautulli covers users, history and the ownership check by itself — no Jellyfin needed.
-- SQLite storage, metadata cache (keeps you under OMDb's 1,000/day free limit — today's usage shows in Settings), automatic 60-day purge.
-- Single container: FastAPI + vanilla HTML/CSS/JS. No database server, no telemetry.
+- SQLite storage, metadata cache (keeps you under OMDb's 1,000/day free limit — today's usage shows in Settings), automatic purge with a one-year hard ceiling.
+- Single container: FastAPI + vanilla HTML/CSS/JS. No database server, no telemetry, no third-party embeds.
 
 ## Screenshots
 
-| Season picker | Mobile |
-|:---:|:---:|
-| <img src="docs/screenshot-season-picker.png" width="420" alt="Season picker modal for a TV request"> | <img src="docs/screenshot-mobile.png" width="240" alt="jellylook on a phone-width screen"> |
+| Filters and genre facets | Season picker | Mobile |
+|:---:|:---:|:---:|
+| <img src="docs/screenshot-filters.png" width="380" alt="Filter drawer with genre chips, decade, runtime, rating and streaming filters"> | <img src="docs/screenshot-season-picker.png" width="300" alt="Season picker modal for a TV request"> | <img src="docs/screenshot-mobile.png" width="170" alt="jellylook on a phone-width screen"> |
+
+## Teaching it what you like
+
+Every card carries two buttons.
+
+| | What it does |
+|---|---|
+| **♡ Save** | Keeps the title in a **Saved** list. Shown to the AI next scan as something you liked. |
+| **✕ Not for me** | Removes the card and never suggests that title again. Shown to the AI next scan as something you rejected. Reversible from the **Hidden** list. |
+
+Three things worth knowing:
+
+- **A verdict belongs to the people ticked in *who's watching*.** One person ticked records one person's opinion; a household watching together ticks both and speaks for both. There is no separate "who is voting" setting to keep in sync.
+- **A scan for several people skips anything *any* of them has hidden.** Showing something one viewer has banned is worse than omitting something another merely bookmarked.
+- **It takes about three of each before the AI leans on them.** Two rejected horror films aren't evidence that you dislike horror, so jellylook stays quiet until there's a real signal — and it caps how much of the prompt your history can occupy.
+
+Hiding is enforced twice: once as a request to the model, and again after TMDb resolves each suggestion to an id. The second pass is the one that counts — models return excluded titles anyway, and matching on the title string alone would confuse *The Office* (US) with *The Office* (UK).
 
 ## Requirements
 
@@ -74,6 +95,10 @@ Open `.env` in an editor. The minimum you must set depends on your media server:
 
 Everyone also needs `TMDB_API_KEY`, `OMDB_API_KEY` and one AI provider key. `SEERR_API_KEY` is optional. Full list of every setting is in [Configuration](#configuration) below.
 
+Outside Australia, set `TMDB_REGION` to your country (`US`, `GB`, `DE`, `CA`…) so
+"where to watch" shows services you can actually get. Everything else has a
+sensible default — you do not need to touch it.
+
 Then point the URLs at your servers — `JELLYSTAT_URL`, `JELLYFIN_URL` (or `TAUTULLI_URL`) and `SEERR_URL`. **Use LAN IPs, not `localhost`** — these URLs are dialled from *inside* the container, where `localhost` is the container itself.
 
 Settings you don't use can stay at their placeholder values; jellylook only reads the ones your `HISTORY_SOURCE` and `LLM_PROVIDER` select.
@@ -88,7 +113,9 @@ jellylook fails fast on missing configuration and prints exactly which `.env` va
 
 ### 4. Open it
 
-Go to `http://<your-host>:3045`, tick who's watching, and press **Scan**. The first scan takes a minute or so (one AI call plus metadata lookups for ~60 titles); everything after that — sorting, filtering, paging, Seerr requests — is instant and free.
+Go to `http://<your-host>:3045`, tick who's watching, and press **Scan**. The first scan takes a minute or so (one AI call plus metadata lookups for ~60 titles); everything after that — sorting, filtering, paging, saving, hiding, Seerr requests — is instant and free.
+
+Then start marking cards ♡ and ✕. The next scan will already be better.
 
 ## Updating
 
@@ -97,7 +124,9 @@ docker compose pull
 docker compose up -d
 ```
 
-Your SQLite database lives in `./data` next to the compose file and survives updates. To pin a specific release instead of tracking `latest`, change the tag in `docker-compose.yml`:
+Your SQLite database lives in `./data` next to the compose file and survives updates. Schema changes are applied automatically at startup, so upgrading from an earlier version needs no migration step — existing recommendations keep working, and gain genre/runtime/streaming data as they are re-scanned.
+
+To pin a specific release instead of tracking `latest`, change the tag in `docker-compose.yml`:
 
 ```yaml
 image: ghcr.io/dean1850/jellylook:1.0.0
@@ -117,10 +146,31 @@ After editing `.env`, apply it with `docker compose up -d --force-recreate`.
 |---|---|---|
 | `TZ` | `Australia/Sydney` | Timezone used for log timestamps |
 | `JELLYLOOK_PORT` | `3045` | Host port the UI is served on |
-| `RETENTION_DAYS` | `60` | How long results and cached metadata are kept before purge |
+| `RETENTION_DAYS` | `60` | How long results and cached metadata are kept before purge. Titles you saved are exempt |
+| `MAX_RETENTION_DAYS` | `365` | Hard ceiling — nothing survives past this, saved titles included. Keeps a long-running instance from growing without bound |
 | `RECS_PER_SCAN` | `60` | Titles requested per scan (5–100). The **Settings** panel overrides it; saving the panel back to this value hands control to `.env` again |
 | `PER_PAGE` | `20` | Cards per page |
+| `EXCLUDE_BUDGET` | `300` | Titles the prompt may spend telling the AI what *not* to suggest. Lower it for local models with a small context window |
 | `LOG_LEVEL` | `INFO` | Container log verbosity — `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
+Every one of these has a working default — a `.env` that only carries your API
+keys is a complete configuration.
+
+### Housekeeping
+
+Two retention windows, because saving a title should mean something without
+letting the database grow forever:
+
+1. **`RETENTION_DAYS`** (60) clears ordinary results and cached metadata. Titles
+   you have **saved** are skipped.
+2. **`MAX_RETENTION_DAYS`** (365) is absolute and skips nothing. A saved title
+   ages out after a year like everything else.
+
+Your **save and hide decisions are never deleted** — they are a few bytes each,
+and expiring them would silently resurrect titles you had already rejected. A
+title you hid two years ago stays hidden even though its card is long gone.
+
+Purge runs at startup and once a day after that.
 
 ### Watch-history source
 
@@ -172,8 +222,15 @@ Open WebUI is called through its OpenAI-compatible endpoint (`{OPENWEBUI_BASE_UR
 
 | Variable | Default | What it does |
 |---|---|---|
-| `TMDB_API_KEY` | — | Free v3 key from [themoviedb.org](https://www.themoviedb.org/settings/api). Supplies ids, posters, backdrops and scores |
+| `TMDB_API_KEY` | — | Free v3 key from [themoviedb.org](https://www.themoviedb.org/settings/api). Supplies ids, posters, backdrops, scores, genres, runtimes, trailers and streaming availability |
 | `OMDB_API_KEY` | — | Free key from [omdbapi.com](https://www.omdbapi.com/apikey.aspx) — 1,000 lookups/day. Supplies IMDB ratings |
+| `TMDB_REGION` | `AU` | ISO 3166-1 country code for "where to watch" — `US`, `GB`, `DE`, `CA`… |
+
+Streaming availability and trailers ride along on the TMDb request jellylook was
+already making (`append_to_response`), so they add **no** extra API calls and no
+extra key. Availability is stored per title when it is scanned, so changing
+`TMDB_REGION` applies to new scans; existing cards keep the region they were
+scanned under.
 
 ## Verifying the install
 
@@ -184,6 +241,24 @@ docker compose run --rm jellylook python -m app.selftest
 ```
 
 This enriches a known title through TMDb + OMDb, proves the cache works, and asks your active AI provider for 5 sample recommendations.
+
+## Running the tests
+
+The test suite needs no API keys and makes no outbound requests — the browser
+tests drive the real app against a mock stand-in for Jellystat, Jellyfin, TMDb,
+OMDb, Seerr and the LLM.
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest tests/test_db.py tests/test_llm.py tests/test_recommender.py -q   # ~4s
+
+python -m playwright install chromium
+tests/e2e/harness.sh start
+python -m pytest tests/e2e/test_ui.py -q
+tests/e2e/harness.sh stop
+```
+
+Both suites run in CI on every push.
 
 ## Building from source
 
@@ -205,10 +280,12 @@ Every push to `main` runs [the workflow](.github/workflows/docker-publish.yml), 
 ## How a scan works
 
 1. Recent plays for the selected user(s) are pulled from Jellystat (Jellyfin fallback) — or from Tautulli on a Plex setup — and weighted by recency and play count.
-2. One request to your AI provider returns the whole batch as JSON — title, year, type, a one-line reason, a 0–100 match estimate, and the watched title it's based on.
-3. Each suggestion is resolved via TMDb (id, poster, backdrop, score) and OMDb (IMDB rating), with every lookup cached.
-4. Titles already in your library are flagged (Jellyfin matches on IMDb/TMDb ids; Plex matches on title + year via Tautulli); anything you've already watched is dropped.
-5. Results land in SQLite and render 20 per page.
+2. An exclusion list is assembled by priority within `EXCLUDE_BUDGET`: titles those viewers **hid** first, then what they've watched, then what earlier scans already offered. An explicit rejection is worth more prompt space than the 150th watched title.
+3. One request to your AI provider returns the whole batch as JSON — title, year, type, a one-line reason, a 0–100 match estimate, and the watched title it's based on. Saved and hidden titles ride along as liked/rejected examples once there are at least three of either.
+4. Each suggestion is resolved via TMDb (id, poster, backdrop, score, genres, runtime, trailer, streaming availability) and OMDb (IMDB rating), with every lookup cached.
+5. Anything the model returned that those viewers had hidden is dropped here — after resolution, matched on TMDb id rather than on the title text.
+6. Titles already in your library are flagged (Jellyfin matches on IMDb/TMDb ids; Plex matches on title + year via Tautulli); anything you've already watched is dropped.
+7. Results land in SQLite and render 20 per page.
 
 The match % is the model's own similarity estimate — directionally useful, not science.
 
@@ -219,6 +296,9 @@ The match % is the model's own similarity estimate — directionally useful, not
 - **No users / scan fails immediately** — the history source (Jellystat, Tautulli or Jellyfin) is unreachable or the API key is wrong. The URLs must be reachable *from inside the container* (use LAN IPs, not `localhost`).
 - **Add to Seerr disabled** — Seerr didn't answer; cards still work and the button returns when Seerr does.
 - **OMDb limit** — the free key allows 1,000 lookups/day. The cache makes re-scans nearly free; Settings shows today's count.
+- **"returned no usable recommendations"** — the model answered but gave nothing back. Usually a small local model ignoring the JSON format, or an exclude list so long there was nothing left to suggest. Try a larger model, or lower `EXCLUDE_BUDGET`.
+- **A genre filter hides older titles** — recommendations scanned before this version have no genre data, and jellylook won't claim an unknown genre is a match. The status line says how many were held back; they age out on their own.
+- **No streaming logos** — check `TMDB_REGION` matches a country TMDb has data for, and remember availability is recorded at scan time, so existing cards keep the region they were scanned under.
 - **`exec format error`** — you're on hardware the image wasn't built for. The published image covers `linux/amd64` and `linux/arm64`; 32-bit ARM (older Raspberry Pi OS) needs a local build.
 
 ## Security
@@ -231,7 +311,10 @@ jellylook has **no built-in authentication** — it is designed to run on a trus
 
 ## Privacy
 
-jellylook sends your recent watch **titles** (not full history, not identities) to whichever AI provider you configure, and title lookups to TMDb and OMDb. If you'd rather nothing leaves your network, point `LLM_PROVIDER=ollama` at a local model — then only the TMDb/OMDb metadata lookups go out.
+jellylook sends your recent watch **titles** (not full history, not identities) to whichever AI provider you configure, and title lookups to TMDb and OMDb. Titles you save or hide are sent too, as examples of what to lean toward and away from. If you'd rather nothing leaves your network, point `LLM_PROVIDER=ollama` at a local model — then only the TMDb/OMDb metadata lookups go out.
+
+Trailers are **links**, not embedded players: nothing loads from Google unless
+you click through. Posters and provider logos are served from TMDb's image CDN.
 
 ## Stack
 
@@ -239,4 +322,7 @@ Python 3.12 · FastAPI · httpx · SQLite (WAL) · vanilla HTML/CSS/JS · one Do
 
 ## License
 
-[MIT](LICENSE) — do what you like, no warranty. Not affiliated with Jellyfin, Jellystat, Plex, Tautulli, Overseerr/Jellyseerr, TMDb, OMDb, or any AI provider. This product uses the TMDB API but is not endorsed or certified by TMDB.
+[MIT](LICENSE) — do what you like, no warranty. Not affiliated with Jellyfin, Jellystat, Plex, Tautulli, Overseerr/Jellyseerr, TMDb, OMDb, JustWatch, or any AI provider.
+
+This product uses the TMDB API but is not endorsed or certified by TMDB.
+Streaming availability data provided by **JustWatch**.

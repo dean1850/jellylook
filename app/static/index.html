@@ -32,11 +32,17 @@
         </button>
       </div>
       <div class="filter-row">
-        <div class="seg" role="group" aria-label="Filter">
-          <span class="seg-label">Filter</span>
+        <div class="seg" role="group" aria-label="View">
+          <span class="seg-label">View</span>
           <button class="seg-btn is-active" data-filter="all">All</button>
           <button class="seg-btn" data-filter="tv">TV</button>
           <button class="seg-btn" data-filter="film">Film</button>
+          <button class="seg-btn" data-filter="saved" id="tab-saved">&#9825; Saved</button>
+          <button class="seg-btn" data-filter="hidden" id="tab-hidden">Hidden</button>
+        </div>
+        <div class="seg" role="group" aria-label="Results from">
+          <span class="seg-label">From</span>
+          <select id="scan-select" aria-label="Which scan to show"></select>
         </div>
         <div class="seg" role="group" aria-label="Sort">
           <span class="seg-label">Sort</span>
@@ -44,7 +50,75 @@
             <option value="match">Match %</option>
             <option value="imdb">IMDB</option>
             <option value="year">Year</option>
+            <option value="runtime">Runtime</option>
+            <option value="popularity">Popularity</option>
+            <option value="added">Recently added</option>
           </select>
+        </div>
+        <button class="seg-btn filters-toggle" id="btn-filters"
+                aria-expanded="false" aria-controls="filter-drawer">
+          Filters <span class="filter-count" id="filter-count" hidden>0</span>
+        </button>
+      </div>
+
+      <div class="filter-drawer" id="filter-drawer" hidden>
+        <div class="drawer-inner">
+          <div class="drawer-block">
+            <span class="drawer-label">Genre</span>
+            <div class="chips genre-chips" id="genre-chips"></div>
+          </div>
+          <div class="drawer-grid">
+            <label class="field">Released after
+              <select id="f-decade">
+                <option value="">Any year</option>
+                <option value="2020">2020s</option>
+                <option value="2010">2010s and newer</option>
+                <option value="2000">2000s and newer</option>
+                <option value="1990">1990s and newer</option>
+                <option value="1970">1970s and newer</option>
+              </select>
+            </label>
+            <label class="field">Max length
+              <select id="f-runtime">
+                <option value="">Any length</option>
+                <option value="30">Up to 30 min</option>
+                <option value="60">Up to 1 hour</option>
+                <option value="100">Up to 1h 40m</option>
+                <option value="120">Up to 2 hours</option>
+                <option value="150">Up to 2h 30m</option>
+              </select>
+            </label>
+            <label class="field">Min IMDB
+              <select id="f-imdb">
+                <option value="">Any rating</option>
+                <option value="6">6.0+</option>
+                <option value="7">7.0+</option>
+                <option value="7.5">7.5+</option>
+                <option value="8">8.0+</option>
+              </select>
+            </label>
+            <label class="field">In my library
+              <select id="f-library">
+                <option value="any">Show all</option>
+                <option value="hide">Hide owned</option>
+                <option value="only">Only owned</option>
+              </select>
+            </label>
+            <label class="field">Streaming
+              <select id="f-streaming">
+                <option value="any">Show all</option>
+                <option value="hide">Not streamable</option>
+                <option value="only">Already streamable</option>
+              </select>
+            </label>
+            <label class="field">Requested
+              <select id="f-requested">
+                <option value="any">Show all</option>
+                <option value="hide">Hide requested</option>
+              </select>
+            </label>
+          </div>
+          <button class="ghost-btn" id="btn-reset-filters">Reset filters</button>
         </div>
       </div>
     </section>
@@ -130,12 +204,38 @@
       your chosen AI provider for a full batch of suggestions, then adds posters
       and ratings from TMDb and OMDb. Sorting, filtering and paging never
       trigger another AI call.</p>
+      <h3>Teaching it what you like</h3>
+      <p>Every card has <strong>&#9825; Save</strong> and
+      <strong>&#10005; Not for me</strong>. Hiding a title removes it and it is
+      never suggested again. Both lists are shown to the AI on the next scan as
+      liked and rejected examples, so the picks shift toward you over time —
+      it takes about three of each before jellylook starts leaning on them.</p>
+      <p>Feedback belongs to whoever is ticked in the <em>who's watching</em>
+      row, so two people on one server keep separate taste. Tick both and the
+      verdict counts for both. A scan for several people skips anything
+      <em>any</em> of them has hidden.</p>
+      <h3>Latest scan vs All time</h3>
+      <p>The <strong>From</strong> dropdown switches between the newest batch, a
+      specific earlier scan, and <strong>All time</strong> — every title
+      suggested inside the retention window, newest sighting first, with
+      duplicates and hidden titles removed.</p>
       <h3>What the match % means</h3>
       <p>It's the AI's own estimate of how close a title sits to your recent
       viewing, from 0 to 100. Directionally useful, not science.</p>
       <h3>"Because you watched"</h3>
       <p>Each suggestion names the specific title in your history that inspired
       it, so you can see the connection at a glance.</p>
+      <h3>Where to watch</h3>
+      <p>Streaming availability is shown for the country set by
+      <code>TMDB_REGION</code>, and is stored when a title is scanned — change
+      the region and new scans pick it up. Data is provided by
+      <strong>JustWatch</strong> via TMDb.</p>
+      <h3>Housekeeping</h3>
+      <p>Results are kept for <code>RETENTION_DAYS</code> (60 by default).
+      Titles you save are exempt from that, but nothing survives past
+      <code>MAX_RETENTION_DAYS</code> — one year — so the database cannot grow
+      forever. Your save/hide decisions themselves are never deleted, so a
+      hidden title stays hidden even after its card has aged out.</p>
       <h3>The .env knobs</h3>
       <p><code>LLM_PROVIDER</code> switches between anthropic, openai, google,
       openwebui and ollama (with <code>LLM_MODEL</code> for the model name).
@@ -143,7 +243,8 @@
       and jellyfin.
       <code>RECS_PER_SCAN</code>, <code>PER_PAGE</code> and
       <code>RETENTION_DAYS</code> control batch size, paging and how long
-      results are kept. Restart the container after changing <code>.env</code>.</p>
+      results are kept. <code>TMDB_REGION</code> sets the streaming country.
+      Restart the container after changing <code>.env</code>.</p>
       <h3>Troubleshooting</h3>
       <p><strong>Source unreachable</strong> — a scan that fails immediately
       usually means the history source (Jellystat, Tautulli or Jellyfin) can't
@@ -152,6 +253,24 @@
       disabled until Seerr answers again.<br />
       <strong>OMDb limit</strong> — the free key allows 1000 lookups a day.
       The cache keeps re-scans nearly free; today's count shows in Settings.</p>
+      <h3>Credits</h3>
+      <p class="muted">This product uses the TMDB API but is not endorsed or
+      certified by TMDB. Streaming availability data provided by JustWatch.</p>
+    </div>
+  </div>
+
+  <!-- Trailer modal -->
+  <div class="overlay hidden" id="trailer-overlay">
+    <div class="modal trailer-modal" role="dialog" aria-modal="true"
+         aria-labelledby="trailer-title">
+      <h2 id="trailer-title">Trailer</h2>
+      <p class="muted">Trailers open on YouTube. jellylook doesn't embed the
+      player, so nothing loads from Google unless you follow the link.</p>
+      <div class="modal-actions">
+        <button class="ghost-btn" data-close="trailer-overlay">Cancel</button>
+        <a class="primary-btn" id="trailer-link" href="#" target="_blank"
+           rel="noopener noreferrer">Watch on YouTube &#8599;</a>
+      </div>
     </div>
   </div>
 

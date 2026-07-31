@@ -40,6 +40,14 @@ class MediaMeta(BaseModel):
     backdrop_url: Optional[str] = None
     overview: Optional[str] = None
     genres: Optional[str] = None
+    # Comma-delimited TMDb genre ids, sentinel-wrapped as ",28,12," so a LIKE
+    # filter cannot match 12 inside 120. Display text stays in `genres`.
+    genre_ids: Optional[str] = None
+    runtime: Optional[int] = None            # minutes; TV uses episode length
+    original_language: Optional[str] = None
+    popularity: Optional[float] = None
+    trailer_key: Optional[str] = None        # YouTube key, from TMDb /videos
+    providers: Optional[str] = None          # JSON, region-filtered; see metadata.py
 
 
 class Recommendation(BaseModel):
@@ -62,6 +70,29 @@ class Recommendation(BaseModel):
     because_of: Optional[str] = None
     is_in_library: bool = False
     seerr_status: Optional[str] = None
+    genre_ids: Optional[str] = None
+    runtime: Optional[int] = None
+    original_language: Optional[str] = None
+    popularity: Optional[float] = None
+    trailer_key: Optional[str] = None
+    providers: Optional[str] = None
+
+
+class FeedbackEntry(BaseModel):
+    """One viewer's verdict on one title.
+
+    title/year/poster_url are denormalised so a verdict outlives the
+    recommendation row it came from — otherwise a 👎 would stop working once
+    the row is purged and the title would come straight back.
+    """
+    user_id: str
+    media_type: str
+    tmdb_id: int
+    verdict: str  # saved | hidden
+    title: str
+    year: Optional[int] = None
+    poster_url: Optional[str] = None
+    created_at: str
 
 
 class ScanRecord(BaseModel):

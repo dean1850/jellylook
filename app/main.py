@@ -35,11 +35,12 @@ _scan_lock = asyncio.Lock()
 _scan_task: asyncio.Task | None = None
 
 
-async def _purge_loop(retention_days: int) -> None:
+async def _purge_loop(retention_days: int, max_retention_days: int) -> None:
     while True:
         await asyncio.sleep(24 * 3600)
         try:
-            log.info("daily purge: %s", db.purge_old(retention_days))
+            log.info("daily purge: %s",
+                     db.purge_old(retention_days, max_retention_days))
         except Exception:
             log.exception("daily purge failed")
 
@@ -58,10 +59,12 @@ async def lifespan(app: FastAPI):
     db.init_db()
     await http.startup()
     try:
-        log.info("startup purge: %s", db.purge_old(s.retention_days))
+        log.info("startup purge: %s",
+                 db.purge_old(s.retention_days, s.max_retention_days))
     except Exception:
         log.exception("startup purge failed")
-    task = asyncio.create_task(_purge_loop(s.retention_days))
+    task = asyncio.create_task(
+        _purge_loop(s.retention_days, s.max_retention_days))
     try:
         yield
     finally:
@@ -77,18 +80,35 @@ async def health():
     return {"status": "ok"}
 
 
+def _ids(raw: str | None) -> list[str]:
+    """Parse a comma-separated user id list from a query string."""
+    return [part for part in (raw or "").split(",") if part.strip()]
+
+
 @app.get("/api/status")
-async def status():
+async def status(users: str | None = None):
     s = get_settings()
+    user_ids = _ids(users)
     return {
         "provider": s.llm_provider,
         "model": s.llm_model,
         "history_source": s.history_source,
+        "region": s.region,
+        "retention_days": s.retention_days,
+        "max_retention_days": s.max_retention_days,
         "omdb_today": db.omdb_today(),
         "omdb_limit": 1000,
         "seerr_reachable": await seerr.ping(),
         "last_scans": db.list_scans(5),
+        "feedback": db.feedback_counts(user_ids),
+        "all_time_total": db.all_time_total(user_ids),
     }
+
+
+@app.get("/api/scans")
+async def scans(limit: int = Query(25, ge=1, le=100), users: str | None = None):
+    return {"scans": db.list_scans(limit),
+            "all_time_total": db.all_time_total(_ids(users))}
 
 
 @app.get("/api/users")
@@ -187,13 +207,92 @@ async def scan_status():
 async def recommendations(
     scan: str = "latest",
     type: str = Query("all", pattern="^(all|movie|tv|film)$"),
-    sort: str = Query("match", pattern="^(match|imdb|year)$"),
+    sort: str = Query("match", pattern="^(match|imdb|year|runtime|added|popularity)$"),
+    page: int = Query(1, ge=1),
+    per_page: int | None = Query(None, ge=1, le=100),
+    users: str | None = None,
+    verdict: str | None = Query(None, pattern="^(saved|hidden)$"),
+    genre: str | None = None,
+    year_min: int | None = Query(None, ge=1870, le=2200),
+    year_max: int | None = Query(None, ge=1870, le=2200),
+    runtime_max: int | None = Query(None, ge=1, le=1000),
+    imdb_min: float | None = Query(None, ge=0, le=10),
+    in_library: str = Query("any", pattern="^(any|hide|only)$"),
+    requested: str = Query("any", pattern="^(any|hide)$"),
+    streaming: str = Query("any", pattern="^(any|hide|only)$"),
+):
+    per_page = per_page or get_settings().per_page
+    user_ids = _ids(users)
+    # Saved and Hidden are lists of decisions, not of a scan's output, so they
+    # ignore the scan selection entirely and read from the feedback table.
+    if verdict:
+        return db.get_feedback_items(user_ids, verdict, page=page,
+                                     per_page=per_page)
+    try:
+        genres = [int(g) for g in _ids(genre)]
+    except ValueError:
+        raise HTTPException(400, "genre must be a comma-separated list of TMDb ids")
+    return db.get_recommendations(
+        scan=scan, media_type="movie" if type == "film" else type, sort=sort,
+        page=page, per_page=per_page, user_ids=user_ids, genres=genres,
+        year_min=year_min, year_max=year_max, runtime_max=runtime_max,
+        imdb_min=imdb_min, in_library=in_library, requested=requested,
+        streaming=streaming,
+    )
+
+
+@app.get("/api/genres")
+async def genres():
+    """TMDb genre id → name, for rendering filter chips."""
+    return {"genres": [{"id": gid, "name": name}
+                       for gid, name in sorted(db.TMDB_GENRES.items(),
+                                               key=lambda kv: kv[1])]}
+
+
+# --- feedback ---------------------------------------------------------------------
+@app.post("/api/feedback")
+async def feedback_post(payload: dict):
+    """Record (or clear) a verdict for every currently selected viewer.
+
+    Attribution comes from the user_ids in the payload — the same chips a scan
+    runs for — so there is no separate "who is voting" setting to keep in sync.
+    """
+    user_ids = [str(u) for u in (payload.get("user_ids") or [])]
+    if not user_ids:
+        raise HTTPException(400, "user_ids (non-empty list) is required — "
+                                 "pick who's watching first")
+    media_type = payload.get("media_type")
+    if media_type not in ("movie", "tv"):
+        raise HTTPException(400, "media_type must be 'movie' or 'tv'")
+    try:
+        tmdb_id = int(payload.get("tmdb_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "tmdb_id (integer) is required")
+
+    verdict = payload.get("verdict")
+    if verdict in (None, "", "none"):
+        db.feedback_clear(user_ids, media_type, tmdb_id)
+        return {"verdict": None, "counts": db.feedback_counts(user_ids)}
+    if verdict not in db.VERDICTS:
+        raise HTTPException(400, f"verdict must be one of "
+                                 f"{sorted(db.VERDICTS)} or null")
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(400, "title is required")
+    db.feedback_set(user_ids, media_type, tmdb_id, verdict, title,
+                    payload.get("year"), payload.get("poster_url"))
+    return {"verdict": verdict, "counts": db.feedback_counts(user_ids)}
+
+
+@app.get("/api/feedback")
+async def feedback_get(
+    verdict: str = Query("saved", pattern="^(saved|hidden)$"),
+    users: str | None = None,
     page: int = Query(1, ge=1),
     per_page: int | None = Query(None, ge=1, le=100),
 ):
-    media_type = "movie" if type == "film" else type
-    return db.get_recommendations(
-        scan=scan, media_type=media_type, sort=sort, page=page,
+    return db.get_feedback_items(
+        _ids(users), verdict, page=page,
         per_page=per_page or get_settings().per_page,
     )
 
