@@ -9,13 +9,24 @@
   --imdb-gold: #F5C518;
   --match: #00A4DC;
   --gradient: linear-gradient(135deg, var(--jf-blue), var(--jf-purple));
+  --danger: #ff7a7a;
   --radius: 14px;
   --gap: 16px;
   --font-display: "Outfit", Inter, system-ui, sans-serif;
   --font-body: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Motion is deliberately short and eased-out: every transition here is
+     feedback on a tap, so it has to finish before the eye starts waiting.
+     Only transform/opacity are animated, which keeps it off the layout path. */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --fast: 120ms;
+  --med: 180ms;
 }
 
 * { box-sizing: border-box; }
+
+/* Several components set an explicit `display`, which outranks the UA
+   stylesheet's [hidden] rule and leaves "hidden" elements on screen. */
+[hidden] { display: none !important; }
 
 body {
   margin: 0;
@@ -133,7 +144,11 @@ main { padding: 24px 22px 48px; max-width: 1180px; margin: 0 auto; }
 
 /* --- filter + sort ---------------------------------------------------------- */
 .filter-row { display: flex; gap: 22px; flex-wrap: wrap; align-items: center; }
-.seg { display: flex; align-items: center; gap: 6px; }
+/* Wraps so the view tabs reflow instead of pushing the page wider than the
+   viewport on a phone — min-width:0 lets the selects shrink rather than hold
+   their intrinsic option width. */
+.seg { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.seg select { max-width: 100%; }
 .seg-label { color: var(--muted); font-size: 13px; margin-right: 4px; }
 .seg-btn {
   background: var(--surface);
@@ -144,6 +159,50 @@ main { padding: 24px 22px 48px; max-width: 1180px; margin: 0 auto; }
   font-size: 14px;
 }
 .seg-btn.is-active { color: var(--text); border-color: var(--jf-blue); background: var(--surface-2); }
+.seg-btn { transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease),
+                       background var(--fast) var(--ease), transform var(--fast) var(--ease); }
+.seg-btn:hover { color: var(--text); }
+.seg-btn:active { transform: scale(0.96); }
+.seg[hidden] { display: none; }
+
+.filters-toggle { display: inline-flex; align-items: center; gap: 7px; }
+.filter-count {
+  background: var(--jf-blue); color: #06222d; font-weight: 600;
+  border-radius: 999px; min-width: 18px; padding: 0 5px;
+  font-size: 11.5px; line-height: 18px; text-align: center;
+}
+
+/* --- filter drawer ---------------------------------------------------------- */
+.filter-drawer {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height var(--med) var(--ease), opacity var(--med) var(--ease);
+  opacity: 0;
+}
+.filter-drawer.is-open { opacity: 1; }
+.drawer-inner {
+  border: 1px solid var(--surface-2);
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex; flex-direction: column; gap: 14px;
+  margin-top: 2px;
+}
+.drawer-label { color: var(--muted); font-size: 13px; display: block; margin-bottom: 8px; }
+.drawer-grid {
+  display: grid; gap: 10px 14px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+.drawer-grid .field { margin: 0; }
+.genre-chips { gap: 7px; }
+.genre-chip {
+  cursor: pointer;
+  transition: transform var(--fast) var(--ease), color var(--fast) var(--ease),
+              border-color var(--fast) var(--ease);
+}
+.genre-chip:hover { color: var(--text); }
+.genre-chip:active { transform: scale(0.95); }
+#btn-reset-filters { align-self: flex-start; }
 
 select {
   background: var(--surface);
@@ -174,11 +233,23 @@ select {
   display: flex;
   flex-direction: column;
   opacity: 0;
-  transform: translateY(8px);
-  animation: reveal 0.4s ease forwards;
-  animation-delay: calc(var(--i) * 45ms);
+  transform: translateY(6px);
+  animation: reveal 0.26s var(--ease) forwards;
+  animation-delay: calc(var(--i) * 26ms);
+  transition: transform var(--fast) var(--ease), border-color var(--fast) var(--ease),
+              opacity var(--med) var(--ease);
 }
 @keyframes reveal { to { opacity: 1; transform: none; } }
+.card:hover { border-color: #2c2c36; transform: translateY(-2px); }
+
+/* Dismissal: the card collapses out of the grid rather than blinking away, so
+   it is obvious which one just left. app.js removes the node on transitionend
+   with a timer as a fallback. */
+.card.is-leaving {
+  opacity: 0;
+  transform: scale(0.94);
+  pointer-events: none;
+}
 
 .poster-wrap { position: relative; aspect-ratio: 2 / 3; background: var(--surface-2); }
 .poster-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -207,6 +278,48 @@ select {
 }
 .lib-chip { background: var(--surface-2); color: var(--jf-blue); border: 1px solid var(--jf-blue); }
 .type-chip { background: var(--surface-2); color: var(--muted); }
+.lib-chip.corner { position: absolute; top: 8px; right: 8px; background: var(--surface); }
+
+/* --- trailer ------------------------------------------------------------------ */
+.trailer-btn {
+  position: absolute; left: 8px; bottom: 8px;
+  width: 34px; height: 34px; border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(8, 8, 12, 0.62);
+  color: #fff; font-size: 12px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  padding-left: 2px;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity var(--fast) var(--ease), transform var(--fast) var(--ease),
+              background var(--fast) var(--ease);
+}
+.card:hover .trailer-btn,
+.card:focus-within .trailer-btn { opacity: 1; transform: scale(1); }
+.trailer-btn:hover { background: var(--jf-blue); border-color: var(--jf-blue); }
+.trailer-btn:active { transform: scale(0.9); }
+/* Touch devices never hover, so the affordance has to be visible by default. */
+@media (hover: none) {
+  .trailer-btn { opacity: 1; transform: none; }
+}
+.trailer-modal .modal-actions a { text-decoration: none; display: inline-block; }
+
+/* --- streaming providers (data: JustWatch, via TMDb) --------------------------- */
+.provider-row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.provider-label { color: var(--muted); font-size: 11.5px; }
+.provider-logo {
+  width: 20px; height: 20px; border-radius: 5px; object-fit: cover;
+  background: var(--surface-2);
+}
+.provider-name {
+  font-size: 11px; color: var(--text); background: var(--surface-2);
+  border-radius: 5px; padding: 2px 6px;
+}
+/* JustWatch require their name beside the availability data they supply. */
+.justwatch {
+  font-size: 9.5px; color: var(--muted); opacity: 0.75;
+  letter-spacing: 0.3px; margin-left: auto;
+}
 
 .card-body { padding: 12px 13px 14px; display: flex; flex-direction: column; gap: 7px; flex: 1; }
 .card-title {
@@ -215,7 +328,12 @@ select {
 }
 .card-title .year { color: var(--muted); font-weight: 500; }
 
-.rating-row { display: flex; align-items: center; gap: 9px; font-size: 13px; }
+/* Wraps because a narrow card has to fit rating + score + type + runtime;
+   without it the last chip is silently clipped at phone widths. */
+.rating-row {
+  display: flex; align-items: center; flex-wrap: wrap;
+  column-gap: 9px; row-gap: 4px; font-size: 13px;
+}
 .imdb-badge {
   background: var(--imdb-gold); color: #111; font-weight: 600;
   border-radius: 5px; padding: 1px 7px;
@@ -227,14 +345,17 @@ select {
 
 .reason {
   color: var(--muted); font-size: 12.5px; line-height: 1.45;
-  max-height: 0; overflow: hidden; transition: max-height 0.25s ease;
+  max-height: 0; overflow: hidden; transition: max-height var(--med) var(--ease);
 }
 .card:hover .reason, .card:focus-within .reason { max-height: 90px; }
 
-.card-actions { margin-top: auto; padding-top: 4px; }
+.card-actions {
+  margin-top: auto; padding-top: 6px;
+  display: flex; align-items: center; gap: 6px;
+}
 
 .seerr-btn {
-  width: 100%;
+  flex: 1; min-width: 0;
   border: 1px solid var(--jf-blue);
   background: transparent;
   color: var(--jf-blue);
@@ -242,11 +363,41 @@ select {
   padding: 8px 0;
   font-size: 13.5px;
   font-weight: 500;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease),
+              transform var(--fast) var(--ease);
 }
 .seerr-btn:hover:not(:disabled) { background: var(--jf-blue); color: #06222d; }
+.seerr-btn:active:not(:disabled) { transform: scale(0.97); }
 .seerr-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .seerr-btn.is-state { border-color: var(--surface-2); color: var(--muted); cursor: default; }
+
+/* --- feedback ------------------------------------------------------------------ */
+.feedback-row { display: flex; gap: 6px; margin-left: auto; }
+.fb-btn {
+  width: 34px; height: 34px;
+  border: 1px solid var(--surface-2);
+  background: var(--surface-2);
+  color: var(--muted);
+  border-radius: 9px;
+  font-size: 14px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  transition: transform var(--fast) var(--ease), color var(--fast) var(--ease),
+              border-color var(--fast) var(--ease), background var(--fast) var(--ease);
+}
+.fb-btn:hover:not(:disabled) { color: var(--text); border-color: var(--jf-blue); }
+.fb-btn:active:not(:disabled) { transform: scale(0.9); }
+.fb-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.fb-btn.is-on {
+  color: var(--jf-purple); border-color: var(--jf-purple);
+  background: rgba(170, 92, 195, 0.14);
+}
+.fb-btn.is-busy { opacity: 0.6; }
+/* Confirmation that a tap registered, without a layout-shifting toast. */
+.fb-btn.pop { animation: pop 240ms var(--ease); }
+@keyframes pop {
+  40% { transform: scale(1.22); }
+  100% { transform: scale(1); }
+}
 
 /* skeletons */
 .skeleton {
@@ -342,6 +493,28 @@ input[type="checkbox"] { accent-color: var(--jf-blue); }
 .status-block dd { margin: 0; font-size: 13.5px; }
 .muted { color: var(--muted); font-size: 12.5px; }
 
+/* --- interaction polish ------------------------------------------------------------- */
+.page-btn { transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease),
+                        transform var(--fast) var(--ease); }
+.page-btn:hover:not(:disabled):not(.is-current) { color: var(--text); }
+.page-btn:active:not(:disabled) { transform: scale(0.94); }
+
+.icon-btn { transition: border-color var(--fast) var(--ease), transform var(--fast) var(--ease); }
+.icon-btn:active { transform: scale(0.92); }
+.chip { transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease); }
+.primary-btn, .ghost-btn { transition: transform var(--fast) var(--ease), opacity var(--fast) var(--ease); }
+.primary-btn:active, .ghost-btn:active { transform: scale(0.97); }
+
+/* Panels and modals slide in rather than appearing, which reads as faster
+   than an instant swap even though it costs 180ms. */
+.overlay:not(.hidden) .modal, .overlay:not(.hidden) .panel {
+  animation: rise var(--med) var(--ease) both;
+}
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+
 /* --- responsive + a11y -------------------------------------------------------------- */
 @media (max-width: 640px) {
   .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
@@ -351,9 +524,19 @@ input[type="checkbox"] { accent-color: var(--jf-blue); }
   header { padding: 18px 16px 14px; }
   .wordmark { height: 34px; }
   .header-right { top: 18px; right: 16px; transform: none; }
+  .filter-row { gap: 12px; }
+  .drawer-grid { grid-template-columns: 1fr 1fr; }
+  .card-actions { flex-wrap: wrap; }
+  .seerr-btn { flex-basis: 100%; }
+  .feedback-row { margin-left: 0; width: 100%; }
+  .fb-btn { flex: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
   .card { opacity: 1; transform: none; }
+  .trailer-btn { opacity: 1; transform: none; }
+  /* The drawer's open state is driven by an inline max-height, so with
+     transitions off it still needs a way to be fully visible. */
+  .filter-drawer.is-open { max-height: none !important; opacity: 1; }
 }

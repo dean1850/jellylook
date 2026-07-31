@@ -22,9 +22,16 @@ class Settings(BaseSettings):
     tz: str = "Australia/Sydney"
     jellylook_port: int = 3045
     retention_days: int = 60
+    # Hard ceiling on how long ANY row survives, regardless of retention_days.
+    # Saved titles are exempt from the retention_days purge but not from this,
+    # so a long-running instance cannot grow without bound.
+    max_retention_days: int = 365
     recs_per_scan: int = 60
     per_page: int = 20
     log_level: str = "INFO"
+    # Total titles the prompt may spend on exclusions. Local models with small
+    # context windows want a smaller number; see llm.build_exclude_list().
+    exclude_budget: int = 300
 
     # history
     history_source: str = "jellystat"  # jellystat | tautulli | jellyfin
@@ -55,6 +62,10 @@ class Settings(BaseSettings):
     # metadata
     tmdb_api_key: str = ""
     omdb_api_key: str = ""
+    # ISO 3166-1 country code for streaming availability (TMDb watch/providers,
+    # sourced from JustWatch). Availability is stored per recommendation at scan
+    # time, so changing this affects new scans only.
+    tmdb_region: str = "AU"
 
     def validate_runtime(self) -> list[str]:
         """Human-readable problems for the active modes (empty list = OK)."""
@@ -93,7 +104,18 @@ class Settings(BaseSettings):
             problems.append("TMDB_API_KEY required")
         if not self.omdb_api_key:
             problems.append("OMDB_API_KEY required")
+
+        if not (len(self.tmdb_region) == 2 and self.tmdb_region.isalpha()):
+            problems.append(
+                f"TMDB_REGION must be a 2-letter country code (e.g. AU, US, GB), "
+                f"got {self.tmdb_region!r}"
+            )
         return problems
+
+    @property
+    def region(self) -> str:
+        """TMDB_REGION normalised to the upper-case form TMDb keys on."""
+        return self.tmdb_region.strip().upper()
 
 
 @lru_cache

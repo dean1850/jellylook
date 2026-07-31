@@ -31,6 +31,28 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # Fast, offline, no API keys. Runs before the image build so a logic
+      # regression fails in seconds rather than after a multi-arch build.
+      - name: Run unit tests
+        run: python -m pytest tests/test_db.py tests/test_llm.py tests/test_recommender.py -q
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run end-to-end browser tests
+        run: |
+          tests/e2e/harness.sh start
+          python -m pytest tests/e2e/test_ui.py -q
+          tests/e2e/harness.sh stop
+
       - name: Build amd64 image for testing
         uses: docker/build-push-action@v6
         with:

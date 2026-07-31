@@ -2,6 +2,8 @@
 .github
 docs
 data
+tests
+requirements-dev.txt
 .env
 .env.*
 !.env.example

@@ -17,19 +17,83 @@ log = logging.getLogger("jellylook.llm")
 MAX_TOKENS = 8000
 
 
-def _build_prompts(profile: dict, n: int, exclude: set[str]) -> tuple[str, str]:
+class NoSuggestions(RuntimeError):
+    """The provider answered, but with nothing usable.
+
+    Distinct from a transport or auth failure so the scan can report something
+    the user can act on rather than "unexpected error".
+    """
+
+# A handful of rejections should nudge the model, not redefine the viewer. Below
+# MIN_TASTE_EXAMPLES the taste blocks are omitted entirely — two rejected horror
+# films are not evidence that someone dislikes horror — and the cap stops a long
+# history from crowding out the profile that does the real work.
+MIN_TASTE_EXAMPLES = 3
+MAX_TASTE_EXAMPLES = 30
+
+# Exclusions are spent by priority, not first-come. An explicit rejection is
+# worth more prompt space than the 150th watched title.
+HIDDEN_CAP = 100
+WATCHED_CAP = 150
+
+
+def build_exclude_list(hidden: list[str], watched: list[str],
+                       suggested: list[str], budget: int) -> list[str]:
+    """Fill a fixed exclusion budget by priority: hidden, watched, then already
+    suggested. Each source arrives newest-first and is capped so no one source
+    can starve the others; de-duplication is case-insensitive.
+
+    The old code sliced a sorted set at 200, which dropped titles alphabetically
+    from T onward — arbitrary, and it had no room for rejections at all.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for titles, cap in ((hidden, HIDDEN_CAP), (watched, WATCHED_CAP),
+                        (suggested, None)):
+        room = budget - len(out)
+        if room <= 0:
+            break
+        allowance = room if cap is None else min(cap, room)
+        for title in titles:
+            if allowance <= 0:
+                break
+            key = (title or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(title.strip())
+            allowance -= 1
+    return out
+
+
+def _build_prompts(profile: dict, n: int, exclude: list[str],
+                   liked: list[str] | None = None,
+                   disliked: list[str] | None = None) -> tuple[str, str]:
     system = (
         "You are a recommendation engine for TV shows and movies. You respond "
         "with ONLY a JSON array — no prose, no markdown fences, no commentary."
     )
-    exclude_list = sorted(exclude)[:200]
+    taste = ""
+    if liked and len(liked) >= MIN_TASTE_EXAMPLES:
+        taste += (
+            "\n\nThey explicitly LIKED these earlier suggestions — lean toward "
+            "what these have in common:\n"
+            f"{json.dumps(liked[:MAX_TASTE_EXAMPLES])}"
+        )
+    if disliked and len(disliked) >= MIN_TASTE_EXAMPLES:
+        taste += (
+            "\n\nThey explicitly REJECTED these earlier suggestions — avoid "
+            "these and close neighbours:\n"
+            f"{json.dumps(disliked[:MAX_TASTE_EXAMPLES])}"
+        )
     user = (
         f"Here is a viewer's RECENT viewing profile (most recent and most "
         f"replayed titles carry the most weight):\n\n"
-        f"{json.dumps(profile, indent=1)}\n\n"
+        f"{json.dumps(profile, indent=1)}"
+        f"{taste}\n\n"
         f"Recommend exactly {n} titles they have NOT seen. Never suggest "
         f"anything in this exclude list (or any trivial variant of it):\n"
-        f"{json.dumps(exclude_list)}\n\n"
+        f"{json.dumps(exclude)}\n\n"
         "Rules:\n"
         f"- Return a JSON array of exactly {n} objects, nothing else.\n"
         '- Each object: {"title": str, "year": int, "type": "movie"|"tv", '
@@ -138,9 +202,10 @@ class BaseProvider:
         raise NotImplementedError
 
     async def recommend(
-        self, profile: dict, n: int, exclude: set[str]
+        self, profile: dict, n: int, exclude: list[str],
+        liked: list[str] | None = None, disliked: list[str] | None = None,
     ) -> list[Suggestion]:
-        system, user = _build_prompts(profile, n, exclude)
+        system, user = _build_prompts(profile, n, exclude, liked, disliked)
         text = await self._complete(system, user)
         suggestions = _to_suggestions(_extract_json(text), n)
         if suggestions:
@@ -153,7 +218,12 @@ class BaseProvider:
         text = await self._complete(system, strict)
         suggestions = _to_suggestions(_extract_json(text), n)
         if not suggestions:
-            raise RuntimeError("LLM did not return parseable recommendations")
+            raise NoSuggestions(
+                f"{self.s.llm_provider}/{self.s.llm_model} returned no usable "
+                f"recommendations. Either the model isn't following the JSON "
+                f"format, or the exclude list left it nothing to suggest — try "
+                f"a larger model, or lower EXCLUDE_BUDGET."
+            )
         return suggestions
 
 
