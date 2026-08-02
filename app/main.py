@@ -140,6 +140,12 @@ def _validate_setting(key: str, value: str) -> str:
             return str(db.clamp_recs_per_scan(value))
         except (ValueError, TypeError):
             raise HTTPException(400, "recs_per_scan must be a number")
+    if key == "auto_request_threshold":
+        try:
+            return str(db.clamp_auto_threshold(value))
+        except (ValueError, TypeError):
+            raise HTTPException(
+                400, "auto_request_threshold must be a number (0 to turn it off)")
     return value  # default_user_ids: free-form id list
 
 

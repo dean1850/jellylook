@@ -18,7 +18,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from . import db, history, llm, metadata
+from . import db, history, llm, metadata, seerr
 from .config import get_settings
 from .models import Recommendation, ScanRecord, Suggestion, WatchedItem
 
@@ -193,8 +193,127 @@ async def run_scan(user_ids: list[str],
     )
     db.insert_scan(scan)
     db.insert_recommendations(scan_id, recs)
+
+    # Auto-request runs last, on rows that are already persisted, so a Seerr
+    # outage costs the scan nothing. It is still user-initiated: this whole
+    # function only runs because someone pressed Scan.
+    await auto_request(recs, step=step, progress=progress)
+
     step("done", f"{len(recs)} recommendations in {duration_ms} ms ({status})")
     return scan
+
+
+# --- auto-request ----------------------------------------------------------------
+async def auto_request(recs: list[Recommendation], threshold: int | None = None,
+                       tv_mode: str | None = None, step=None,
+                       progress: dict | None = None) -> list[Recommendation]:
+    """File Seerr requests for every rec at or above the match threshold.
+
+    Off unless the user sets a threshold in Settings, and skipped entirely when
+    Seerr is unreachable. Titles already owned, already known to Seerr, or
+    never resolved to a TMDb id are left alone, and a per-title failure is
+    logged rather than raised — the card simply keeps its normal Add button.
+
+    Returns the recs that were sent, mutated to carry the new state so the same
+    objects can be reported on without a re-read. `progress` (the scan's status
+    dict) is filled in for the UI, including when nothing could be sent: a
+    feature the user switched on has to say why it stayed quiet.
+    """
+    if threshold is None:
+        threshold = _auto_threshold()
+
+    def report(sent: list[Recommendation], note: str = "") -> list[Recommendation]:
+        if progress is not None:
+            progress["auto_threshold"] = threshold
+            progress["auto_requested"] = len(sent)
+            progress["auto_sent"] = [rec.title for rec in sent]
+            if note:
+                progress["auto_note"] = note
+        return sent
+
+    if threshold <= 0:
+        return report([])
+    # Highest match first: if Seerr starts refusing part-way through, the
+    # titles that got in are the ones the threshold was aimed at.
+    candidates = sorted(
+        (rec for rec in recs if rec.tmdb_id and not rec.is_in_library
+         and (rec.match_score or 0) >= threshold),
+        key=lambda rec: rec.match_score or 0, reverse=True,
+    )
+    if not candidates:
+        return report([])
+    if not await seerr.ping():
+        log.warning("auto-request skipped for %d title(s): Seerr is unreachable",
+                    len(candidates))
+        return report([], "Seerr was unreachable, so nothing was auto-sent.")
+    if tv_mode is None:
+        tv_mode = db.settings_get_all().get("tv_request_mode", "ask")
+
+    sent: list[Recommendation] = []
+    failed = 0
+    for rec in candidates:
+        if step:
+            step("seerr", f"auto-requesting {rec.title} ({rec.match_score}%)")
+        try:
+            existing = await seerr.get_status(rec.media_type, rec.tmdb_id)
+            if existing:
+                # Already requested by someone, or already available. Record
+                # what Seerr says and move on — this is not our request.
+                rec.seerr_status = existing
+                db.update_seerr_status(rec.media_type, rec.tmdb_id, existing)
+                continue
+            seasons = None
+            if rec.media_type == "tv":
+                seasons = await _auto_seasons(rec.tmdb_id, tv_mode)
+                if not seasons:
+                    log.warning("auto-request skipped for %s: Seerr returned no "
+                                "seasons", rec.title)
+                    continue
+            result = await seerr.request(rec.media_type, rec.tmdb_id, seasons)
+        except Exception:
+            log.exception("auto-request failed for %s", rec.title)
+            failed += 1
+            continue
+        if not result.get("ok"):
+            log.warning("auto-request rejected for %s: %s", rec.title,
+                        result.get("error"))
+            failed += 1
+            continue
+        status = result.get("status") or "requested"
+        rec.auto_requested = True
+        rec.seerr_status = status
+        db.mark_auto_requested(rec.media_type, rec.tmdb_id, status)
+        sent.append(rec)
+
+    if sent:
+        log.info("auto-requested %d title(s) at or above %d%%: %s",
+                 len(sent), threshold, ", ".join(rec.title for rec in sent))
+    note = ""
+    if failed:
+        note = (f"Seerr refused {failed} auto-request"
+                f"{'' if failed == 1 else 's'} — check the container logs.")
+    return report(sent, note)
+
+
+async def _auto_seasons(tmdb_id: int, tv_mode: str) -> list[int]:
+    """Which seasons an unattended TV request should ask for.
+
+    'ask' cannot be honoured with nobody at the keyboard, so it lands on the
+    whole show — the same thing the picker's "All seasons" tick does.
+    """
+    if tv_mode == "first":
+        return [1]
+    return [season["seasonNumber"] for season in await seerr.get_seasons(tmdb_id)
+            if season.get("seasonNumber")]
+
+
+def _auto_threshold() -> int:
+    """The saved threshold, or 0 (off) when unset or unusable."""
+    try:
+        return db.clamp_auto_threshold(
+            db.settings_get_all().get("auto_request_threshold", 0))
+    except (ValueError, TypeError):
+        return 0
 
 
 def _dedupe(suggestions: list[Suggestion],

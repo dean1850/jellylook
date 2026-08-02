@@ -247,6 +247,9 @@
         renderLastScan(status.last_scans);
         await refreshSidebarState();
         await loadRecommendations();
+        // Last word, because loadRecommendations() writes the status line too.
+        const auto = autoSentNote(st);
+        if (auto) setStatus(auto, !st.auto_requested);
         return;
       }
       // idle/unknown — the server restarted mid-scan. Recover gracefully.
@@ -257,6 +260,21 @@
   }
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /** What a scan auto-sent to Seerr, named rather than just counted.
+   *  With the feature on and nothing sent, the scan's own note explains why —
+   *  silence would look like a broken setting. */
+  function autoSentNote(st) {
+    const n = st.auto_requested || 0;
+    if (!n) return st.auto_note || "";
+    const titles = st.auto_sent || [];
+    const shown = titles.slice(0, 3).join(", ");
+    const extra = titles.length - 3;
+    return `⤴ Auto-sent ${n} title${n === 1 ? "" : "s"} to Seerr `
+         + `(match ≥ ${st.auto_threshold}%)`
+         + (shown ? ` — ${shown}${extra > 0 ? ` and ${extra} more` : ""}` : "")
+         + "." + (st.auto_note ? ` ${st.auto_note}` : "");
+  }
 
   function renderSkeletons() {
     grid.innerHTML = "";
@@ -388,6 +406,14 @@
       badge.textContent = `${rec.match_score}%`;
       badge.title = `Match ${rec.match_score}% — the AI's similarity estimate`;
       posterWrap.appendChild(badge);
+    }
+    if (rec.auto_requested) {
+      const auto = document.createElement("span");
+      auto.className = "auto-chip";
+      auto.textContent = "⤴ Auto-sent";
+      auto.title = "jellylook sent this to Seerr automatically — it cleared "
+                 + "your auto-request match %";
+      posterWrap.appendChild(auto);
     }
     if (rec.trailer_key) posterWrap.appendChild(trailerButton(rec));
 
@@ -626,8 +652,8 @@
     btn.className = "seerr-btn";
     const key = `${rec.media_type}:${rec.tmdb_id}`;
     const known = rec.seerr_status || state.seerrStatusCache.get(key);
-    if (known) {
-      applySeerrState(btn, known);
+    if (known || rec.auto_requested) {
+      applySeerrState(btn, known || "requested", rec.auto_requested);
       return btn;
     }
     btn.textContent = "+ Add to Seerr";
@@ -640,10 +666,14 @@
     return btn;
   }
 
-  function applySeerrState(btn, status) {
+  function applySeerrState(btn, status, auto) {
     const labels = { requested: "Requested ✓", pending: "Pending", available: "Available" };
-    btn.textContent = labels[status] || status;
+    // An auto-sent title says so instead of reading like the user pressed the
+    // button — the whole point of the badge is that nobody did.
+    btn.textContent = auto ? "Auto-sent to Seerr ✓" : (labels[status] || status);
     btn.classList.add("is-state");
+    btn.classList.toggle("is-auto", !!auto);
+    if (auto) btn.title = "Requested automatically at the end of the scan";
     btn.disabled = true;
   }
 
@@ -915,6 +945,7 @@
   function fillSettingsPanel(settings, status) {
     $("#set-recs").value = settings.recs_per_scan || 60;
     $("#set-tvmode").value = settings.tv_request_mode || "ask";
+    setThresholdValue(String(settings.auto_request_threshold || "0"));
     $("#set-sort").value = settings.default_sort || "match";
     $("#set-filter").value = settings.default_filter || "all";
 
@@ -936,7 +967,9 @@
     const dl = $("#status-dl");
     dl.innerHTML = "";
     const fb = status.feedback || { saved: 0, hidden: 0 };
+    const threshold = Number(settings.auto_request_threshold || 0);
     const rows = [
+      ["Auto-request", threshold ? `on · match ≥ ${threshold}%` : "off"],
       ["Provider", status.provider],
       ["Model", status.model],
       ["History source", status.history_source],
@@ -953,6 +986,19 @@
     });
   }
 
+  /** The API accepts any 50–100 threshold, so keep a value the dropdown does
+   *  not list selectable rather than blanking the control (and saving ""). */
+  function setThresholdValue(value) {
+    const sel = $("#set-auto-threshold");
+    if (![...sel.options].some((opt) => opt.value === value)) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = `${value}% and above`;
+      sel.appendChild(opt);
+    }
+    sel.value = value;
+  }
+
   $("#settings-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const ids = [...document.querySelectorAll("#settings-user-chips input:checked")]
@@ -965,11 +1011,13 @@
           default_user_ids: ids,
           recs_per_scan: $("#set-recs").value,
           tv_request_mode: $("#set-tvmode").value,
+          auto_request_threshold: $("#set-auto-threshold").value,
           default_sort: $("#set-sort").value,
           default_filter: $("#set-filter").value,
         }),
       });
       state.tvRequestMode = saved.tv_request_mode;
+      setThresholdValue(String(saved.auto_request_threshold || "0"));
       $("#settings-saved").textContent = "Saved.";
       setTimeout(() => { $("#settings-saved").textContent = ""; }, 2500);
     } catch (err) {

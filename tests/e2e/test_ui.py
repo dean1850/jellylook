@@ -44,8 +44,23 @@ def api(path: str):
         return json.load(resp)
 
 
+def post(url: str, payload: dict | None = None):
+    body = json.dumps(payload if payload is not None else {}).encode()
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req) as resp:
+        return json.load(resp)
+
+
 def reset_state():
     """Clear every verdict so tests do not inherit each other's decisions."""
+    # Auto-send is global and persists in SQLite, so a test that turns it on
+    # must not be able to leak it into whatever runs next. The mock's requested
+    # set is cleared for the same reason: an already-requested title is skipped
+    # by design, so without this the suite would only pass on a fresh harness.
+    post(BASE + "/api/settings", {"auto_request_threshold": "0"})
+    post(MOCK + "/seerr/_reset")
     for user in ("u1", "u2"):
         for verdict in ("saved", "hidden"):
             for item in api(f"/api/recommendations?users={user}&verdict={verdict}")["items"]:
@@ -237,6 +252,78 @@ def test_feedback_disabled_without_a_viewer(page):
     page.wait_for_timeout(600)
     if page.locator(".card").count():
         expect(page.locator(".card").first.locator(".fb-btn").first).to_be_disabled()
+
+
+# --- auto-send to Seerr --------------------------------------------------------------
+def set_auto_threshold(page, value):
+    """Drive the Settings panel, so the control and the API are both exercised."""
+    page.locator("#btn-settings").click()
+    expect(page.locator("#settings-overlay")).to_be_visible()
+    page.locator("#set-auto-threshold").select_option(value)
+    page.locator("#settings-form button[type=submit]").click()
+    expect(page.locator("#settings-saved")).to_contain_text("Saved")
+    page.keyboard.press("Escape")
+    expect(page.locator("#settings-overlay")).to_be_hidden()
+
+
+def test_auto_send_requests_high_matches_and_badges_them(page):
+    """Threshold on → scan → the top matches are filed and say so."""
+    select_user(page)
+    set_auto_threshold(page, "90")
+    try:
+        run_scan(page)   # always a fresh scan, so the threshold applies to it
+        expect(page.locator("#status-line")).to_contain_text("Auto-sent")
+
+        card = page.locator(".card", has=page.locator(".auto-chip")).first
+        expect(card).to_be_visible()
+        expect(card.locator(".seerr-btn")).to_contain_text("Auto-sent")
+        expect(card.locator(".seerr-btn")).to_be_disabled()
+
+        # Nothing below the threshold may be sent.
+        for badge in page.locator(".card:has(.auto-chip) .match-badge").all():
+            assert int(badge.inner_text().rstrip("%")) >= 90
+
+        # The badge is a stored fact, not a leftover of the scan response.
+        # Settle first: a reload that cancels the lazy Seerr-status calls
+        # registers as a failed request and fails this test's own fixture.
+        page.wait_for_load_state("networkidle")
+        page.reload()
+        page.wait_for_selector("#user-chips .chip")
+        expect(page.locator(".auto-chip").first).to_be_visible()
+        assert any(item["auto_requested"]
+                   for item in api("/api/recommendations")["items"])
+
+        page.locator("#btn-settings").click()
+        assert "≥ 90%" in page.locator("#status-dl").inner_text()
+        page.keyboard.press("Escape")
+    finally:
+        # Straight to the API: an assertion that leaves an overlay open would
+        # otherwise block the cleanup click and mask the real failure.
+        post(BASE + "/api/settings", {"auto_request_threshold": "0"})
+
+
+def test_a_threshold_the_dropdown_does_not_list_stays_selectable(page):
+    """The API takes any 50-100 value, so the panel must not blank the control
+    on one it has no <option> for — the next save would write "" over it."""
+    post(BASE + "/api/settings", {"auto_request_threshold": "88"})
+    try:
+        # Opening the panel re-reads /api/settings, so no reload is needed.
+        page.locator("#btn-settings").click()
+        expect(page.locator("#set-auto-threshold")).to_have_value("88")
+        page.locator("#settings-form button[type=submit]").click()
+        expect(page.locator("#settings-saved")).to_contain_text("Saved")
+        assert api("/api/settings")["auto_request_threshold"] == "88"
+    finally:
+        post(BASE + "/api/settings", {"auto_request_threshold": "0"})
+
+
+def test_auto_send_off_leaves_the_add_button_alone(page):
+    """The default must stay hands-off: no request, no badge."""
+    select_user(page)
+    run_scan(page)
+    assert page.locator(".auto-chip").count() == 0
+    expect(page.locator("#status-line")).not_to_contain_text("Auto-sent")
+    expect(page.locator(".card").first.locator(".seerr-btn")).to_be_visible()
 
 
 # --- filters ----------------------------------------------------------------------

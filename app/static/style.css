@@ -280,6 +280,18 @@ select {
 .type-chip { background: var(--surface-2); color: var(--muted); }
 .lib-chip.corner { position: absolute; top: 8px; right: 8px; background: var(--surface); }
 
+/* Auto-sent sits top-LEFT: the match badge already owns the right corner, and
+   an auto-sent title always has one — that is why it was sent. */
+.auto-chip {
+  position: absolute; top: 8px; left: 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  padding: 3px 10px;
+  background: var(--surface);
+  color: var(--jf-purple);
+  border: 1px solid var(--jf-purple);
+}
+
 /* --- trailer ------------------------------------------------------------------ */
 .trailer-btn {
   position: absolute; left: 8px; bottom: 8px;
@@ -370,6 +382,12 @@ select {
 .seerr-btn:active:not(:disabled) { transform: scale(0.97); }
 .seerr-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .seerr-btn.is-state { border-color: var(--surface-2); color: var(--muted); cursor: default; }
+/* Auto-sent keeps its colour: it reports something that happened without the
+   user, so it should not read as a spent button. */
+.seerr-btn.is-auto {
+  border-color: var(--jf-purple); color: var(--jf-purple); opacity: 1;
+  font-size: 12.5px;
+}
 
 /* --- feedback ------------------------------------------------------------------ */
 .feedback-row { display: flex; gap: 6px; margin-left: auto; }
@@ -476,6 +494,10 @@ input[type="checkbox"] { accent-color: var(--jf-blue); }
 
 /* --- settings form ------------------------------------------------------------------ */
 .field { display: block; margin: 14px 0; color: var(--muted); font-size: 13.5px; }
+.field-note {
+  display: block; margin-top: 6px; font-size: 12.5px; line-height: 1.45;
+  color: var(--muted); opacity: 0.8;
+}
 .field input[type="number"], .field select {
   display: block; width: 100%; margin-top: 5px;
   background: var(--surface-2); border: 1px solid var(--surface-2);

@@ -70,6 +70,9 @@ class Recommendation(BaseModel):
     because_of: Optional[str] = None
     is_in_library: bool = False
     seerr_status: Optional[str] = None
+    # True once a scan filed this title's Seerr request on the user's behalf,
+    # because it cleared the auto-request threshold.
+    auto_requested: bool = False
     genre_ids: Optional[str] = None
     runtime: Optional[int] = None
     original_language: Optional[str] = None

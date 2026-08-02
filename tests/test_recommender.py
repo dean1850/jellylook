@@ -1,10 +1,11 @@
-"""Taste-profile weighting, metadata extraction and scan-level exclusion."""
+"""Taste-profile weighting, metadata extraction, exclusion and auto-request."""
 import json
 
 import pytest
 
 from app import metadata, recommender
-from app.models import WatchedItem
+from app.models import Recommendation, WatchedItem
+from tests.conftest import make_scan
 
 
 # --- profile ---------------------------------------------------------------------
@@ -61,6 +62,173 @@ def test_dedupe_keeps_a_film_and_a_series_of_the_same_name():
     got = recommender._dedupe(
         [suggestion("Fargo", "movie"), suggestion("Fargo", "tv")], set())
     assert len(got) == 2
+
+
+# --- auto-request ------------------------------------------------------------------
+def rec(title, tmdb_id, *, match_score=95, media_type="movie", in_library=False):
+    return Recommendation(
+        id=f"r{tmdb_id}", scan_id="s1", created_at="2026-01-01T00:00:00+00:00",
+        media_type=media_type, title=title, year=2024, tmdb_id=tmdb_id,
+        match_score=match_score, is_in_library=in_library,
+    )
+
+
+class FakeSeerr:
+    """Stand-in for app.seerr with the same shape and no network."""
+
+    def __init__(self, *, reachable=True, existing=None, fails=(), seasons=(1, 2, 3)):
+        self.reachable = reachable
+        self.existing = existing or {}      # "movie:1" -> status already in Seerr
+        self.fails = set(fails)             # tmdb ids Seerr refuses
+        self.seasons = list(seasons)
+        self.requests: list[tuple] = []
+
+    async def ping(self):
+        return self.reachable
+
+    async def get_status(self, media_type, tmdb_id):
+        return self.existing.get(f"{media_type}:{tmdb_id}")
+
+    async def get_seasons(self, tmdb_id):
+        return [{"seasonNumber": n, "episodeCount": 8, "name": f"Season {n}"}
+                for n in self.seasons]
+
+    async def request(self, media_type, tmdb_id, seasons=None):
+        self.requests.append((media_type, tmdb_id, seasons))
+        if tmdb_id in self.fails:
+            return {"ok": False, "error": "Seerr said no"}
+        return {"ok": True, "status": "requested"}
+
+
+@pytest.fixture
+def fake_seerr(monkeypatch, fresh_db):
+    """A fake Seerr plus a real (empty) database for the status writes."""
+    fake = FakeSeerr()
+    monkeypatch.setattr(recommender, "seerr", fake)
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_auto_request_is_off_by_default(fake_seerr):
+    """Nothing may be requested until the user sets a threshold."""
+    sent = await recommender.auto_request([rec("Great", 1)], threshold=0)
+    assert sent == []
+    assert fake_seerr.requests == []
+
+
+@pytest.mark.asyncio
+async def test_auto_request_sends_only_titles_over_the_threshold(fake_seerr):
+    recs = [rec("Perfect", 1, match_score=96), rec("Close", 2, match_score=90),
+            rec("Middling", 3, match_score=71), rec("Unscored", 4, match_score=None)]
+    sent = await recommender.auto_request(recs, threshold=90)
+    assert [r.title for r in sent] == ["Perfect", "Close"]
+    assert [tmdb for _type, tmdb, _seasons in fake_seerr.requests] == [1, 2]
+    assert recs[0].auto_requested and recs[0].seerr_status == "requested"
+    assert not recs[2].auto_requested
+
+
+@pytest.mark.asyncio
+async def test_auto_request_sends_highest_match_first(fake_seerr):
+    sent = await recommender.auto_request(
+        [rec("Third", 1, match_score=91), rec("First", 2, match_score=99),
+         rec("Second", 3, match_score=95)], threshold=90)
+    assert [r.title for r in sent] == ["First", "Second", "Third"]
+
+
+@pytest.mark.asyncio
+async def test_auto_request_skips_owned_unresolved_and_known_titles(fake_seerr):
+    fake_seerr.existing = {"movie:2": "available"}
+    recs = [rec("Owned", 1, in_library=True), rec("Already there", 2),
+            rec("Unresolved", None), rec("Fresh", 4)]
+    sent = await recommender.auto_request(recs, threshold=90)
+    assert [r.title for r in sent] == ["Fresh"]
+    # The title Seerr already knew about keeps the state Seerr reported, and is
+    # not badged as ours.
+    assert recs[1].seerr_status == "available"
+    assert not recs[1].auto_requested
+
+
+@pytest.mark.asyncio
+async def test_auto_request_skipped_entirely_when_seerr_is_down(fake_seerr):
+    fake_seerr.reachable = False
+    progress = {}
+    sent = await recommender.auto_request([rec("Great", 1)], threshold=90,
+                                          progress=progress)
+    assert sent == []
+    assert fake_seerr.requests == []
+    # The user switched this on; silence would read as a broken setting.
+    assert "unreachable" in progress["auto_note"]
+    assert progress["auto_requested"] == 0
+
+
+@pytest.mark.asyncio
+async def test_progress_carries_what_was_sent(fake_seerr):
+    progress = {}
+    await recommender.auto_request(
+        [rec("Perfect", 1, match_score=96), rec("Ignored", 2, match_score=40)],
+        threshold=90, progress=progress)
+    assert progress["auto_requested"] == 1
+    assert progress["auto_sent"] == ["Perfect"]
+    assert progress["auto_threshold"] == 90
+    assert "auto_note" not in progress
+
+
+@pytest.mark.asyncio
+async def test_progress_reports_a_refusal(fake_seerr):
+    fake_seerr.fails = {1}
+    progress = {}
+    await recommender.auto_request([rec("Refused", 1)], threshold=90,
+                                   progress=progress)
+    assert progress["auto_requested"] == 0
+    assert "refused 1" in progress["auto_note"].lower()
+
+
+@pytest.mark.asyncio
+async def test_one_rejected_title_does_not_stop_the_rest(fake_seerr):
+    fake_seerr.fails = {1}
+    sent = await recommender.auto_request(
+        [rec("Refused", 1, match_score=99), rec("Accepted", 2, match_score=95)],
+        threshold=90)
+    assert [r.title for r in sent] == ["Accepted"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tv_mode,expected", [
+    ("first", [1]),
+    ("all", [1, 2, 3]),
+    # Nobody is at the keyboard during a scan, so "ask" cannot be honoured.
+    ("ask", [1, 2, 3]),
+])
+async def test_tv_seasons_follow_the_request_mode(fake_seerr, tv_mode, expected):
+    await recommender.auto_request([rec("Series", 1, media_type="tv")],
+                                   threshold=90, tv_mode=tv_mode)
+    assert fake_seerr.requests == [("tv", 1, expected)]
+
+
+@pytest.mark.asyncio
+async def test_tv_is_skipped_when_seerr_returns_no_seasons(fake_seerr):
+    """Better to leave the card's picker than to guess at the season list."""
+    fake_seerr.seasons = []
+    sent = await recommender.auto_request([rec("Series", 1, media_type="tv")],
+                                          threshold=90, tv_mode="all")
+    assert sent == [] and fake_seerr.requests == []
+
+
+@pytest.mark.asyncio
+async def test_auto_request_persists_the_badge(fake_seerr, fresh_db):
+    fresh_db.insert_scan(make_scan("s1"))
+    fresh_db.insert_recommendations("s1", [rec("Perfect", 1).model_dump()])
+    await recommender.auto_request([rec("Perfect", 1)], threshold=90)
+    item = fresh_db.get_recommendations(scan="s1")["items"][0]
+    assert item["auto_requested"] is True
+    assert item["seerr_status"] == "requested"
+
+
+@pytest.mark.asyncio
+async def test_threshold_comes_from_settings_when_not_passed(fake_seerr, fresh_db):
+    fresh_db.settings_set("auto_request_threshold", "90")
+    sent = await recommender.auto_request([rec("Perfect", 1, match_score=92)])
+    assert [r.title for r in sent] == ["Perfect"]
 
 
 # --- metadata extraction -----------------------------------------------------------
