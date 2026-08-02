@@ -85,6 +85,9 @@ ADDED_COLUMNS = [
     ("recommendations", "popularity", "REAL"),
     ("recommendations", "trailer_key", "TEXT"),
     ("recommendations", "providers", "TEXT"),
+    # Set when a scan filed the Seerr request by itself, so the card can say so
+    # rather than looking like the user pressed the button.
+    ("recommendations", "auto_requested", "INTEGER DEFAULT 0"),
 ]
 
 DEFAULT_SETTINGS = {
@@ -92,6 +95,10 @@ DEFAULT_SETTINGS = {
     "tv_request_mode": "ask",   # ask | all | first
     "default_sort": "match",    # match | imdb | year
     "default_filter": "all",    # all | movie | tv
+    # 0 = off. Otherwise the match % at or above which a scan files the Seerr
+    # request itself. Off by default: nothing may spend a download slot until
+    # the user asks for it.
+    "auto_request_threshold": "0",
 }
 
 # Settings whose default comes from .env rather than from DEFAULT_SETTINGS.
@@ -116,6 +123,21 @@ def clamp_recs_per_scan(value: object) -> int:
     between rejecting the input and falling back to a default.
     """
     return max(RECS_PER_SCAN_MIN, min(RECS_PER_SCAN_MAX, int(value)))
+
+
+# Anything under 50% is barely a recommendation, let alone one worth requesting
+# unattended, so the threshold is either off or a real number.
+AUTO_REQUEST_MIN = 50
+
+
+def clamp_auto_threshold(value: object) -> int:
+    """Coerce an auto-request threshold to 0 (off) or a 50-100 match %.
+
+    Raises ValueError/TypeError for anything non-numeric, same as
+    clamp_recs_per_scan().
+    """
+    n = int(value)
+    return 0 if n <= 0 else max(AUTO_REQUEST_MIN, min(100, n))
 
 
 SORT_SQL = {
@@ -500,7 +522,7 @@ def get_feedback_items(user_ids: list[str], verdict: str, page: int = 1,
         f"r.imdb_id, r.imdb_rating, r.tmdb_rating, r.backdrop_url, r.overview, "
         f"r.genres, r.genre_ids, r.runtime, r.original_language, r.popularity, "
         f"r.trailer_key, r.providers, r.reason, r.match_score, r.because_of, "
-        f"r.is_in_library, r.seerr_status "
+        f"r.is_in_library, r.seerr_status, r.auto_requested "
         f"FROM fb LEFT JOIN ranked r ON r.media_type = fb.media_type "
         f"AND r.tmdb_id = fb.tmdb_id AND r.rn = 1 "
         f"WHERE fb.rank = ? "
@@ -519,6 +541,7 @@ def get_feedback_items(user_ids: list[str], verdict: str, page: int = 1,
     for row in rows:
         d = dict(row)
         d["is_in_library"] = bool(d.get("is_in_library"))
+        d["auto_requested"] = bool(d.get("auto_requested"))
         d["verdict"] = verdict
         items.append(d)
     return {"items": items, "total": total, "page": page,
@@ -554,6 +577,7 @@ def insert_recommendations(scan_id: str, recs: list) -> None:
             d.get("seerr_status"), d.get("genre_ids"), d.get("runtime"),
             d.get("original_language"), d.get("popularity"),
             d.get("trailer_key"), d.get("providers"),
+            1 if d.get("auto_requested") else 0,
         ))
     with _conn() as conn:
         conn.executemany(
@@ -561,9 +585,9 @@ def insert_recommendations(scan_id: str, recs: list) -> None:
             "year, tmdb_id, imdb_id, imdb_rating, tmdb_rating, poster_url, "
             "backdrop_url, overview, genres, reason, match_score, because_of, "
             "is_in_library, seerr_status, genre_ids, runtime, original_language, "
-            "popularity, trailer_key, providers) "
+            "popularity, trailer_key, providers, auto_requested) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "?, ?, ?, ?, ?, ?)",
+            "?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
 
@@ -708,6 +732,7 @@ def get_recommendations(
         d = dict(row)
         d.pop("rn", None)  # window-function bookkeeping, not part of the API
         d["is_in_library"] = bool(d["is_in_library"])
+        d["auto_requested"] = bool(d.get("auto_requested"))
         items.append(d)
 
     counts: dict[int, int] = {}
@@ -775,6 +800,23 @@ def update_seerr_status(media_type: str, tmdb_id: int, status: str | None) -> in
     with _conn() as conn:
         cur = conn.execute(
             "UPDATE recommendations SET seerr_status = ? "
+            "WHERE media_type = ? AND tmdb_id = ?",
+            (status, media_type, tmdb_id),
+        )
+        return cur.rowcount
+
+
+def mark_auto_requested(media_type: str, tmdb_id: int,
+                        status: str = "requested") -> int:
+    """Flag a title as auto-sent to Seerr, and record the state it came back in.
+
+    Applied to every row for the title, like update_seerr_status(), so the
+    badge is still there when the same title turns up in an earlier scan or in
+    the all-time pool.
+    """
+    with _conn() as conn:
+        cur = conn.execute(
+            "UPDATE recommendations SET auto_requested = 1, seerr_status = ? "
             "WHERE media_type = ? AND tmdb_id = ?",
             (status, media_type, tmdb_id),
         )

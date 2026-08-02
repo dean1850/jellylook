@@ -35,6 +35,7 @@ Tell it what you liked and what you didn't, and the next scan listens. Dark-only
 - **Latest scan or all time** — browse one batch, or every title suggested inside the retention window, deduplicated and newest-first.
 - **Match %** and **"Because you watched \<seed\>"** on every card, so you can see why each title was suggested.
 - **Add to Seerr** — movies request in one click, TV opens a season picker. Titles you already own show an "In library" chip instead.
+- **Auto-send the sure things** — optionally let a scan file its own Seerr requests for anything over a match % you choose. Off by default, never runs on its own, and everything it sends is badged. [More below](#auto-sending-high-matches-to-seerr).
 - **Jellystat (or Tautulli) is the taste signal**; Jellyfin is used only for the ownership check and as a fallback history source. On a Plex setup, Tautulli covers users, history and the ownership check by itself — no Jellyfin needed.
 - SQLite storage, metadata cache (keeps you under OMDb's 1,000/day free limit — today's usage shows in Settings), automatic purge with a one-year hard ceiling.
 - Single container: FastAPI + vanilla HTML/CSS/JS. No database server, no telemetry, no third-party embeds.
@@ -61,6 +62,45 @@ Three things worth knowing:
 - **It takes about three of each before the AI leans on them.** Two rejected horror films aren't evidence that you dislike horror, so jellylook stays quiet until there's a real signal — and it caps how much of the prompt your history can occupy.
 
 Hiding is enforced twice: once as a request to the model, and again after TMDb resolves each suggestion to an id. The second pass is the one that counts — models return excluded titles anyway, and matching on the title string alone would confuse *The Office* (US) with *The Office* (UK).
+
+## Auto-sending high matches to Seerr
+
+If a title comes back at 94% and you were always going to request it, jellylook
+can file that request for you. **Settings → Auto-send to Seerr** sets the match
+% at or above which it does — 70 to 95, or **Off**, which is the default.
+
+**It only ever runs at the end of a scan you started.** There is no background
+job and no schedule: press Scan, and once the results have landed the qualifying
+titles go out. Nothing is requested if you never press the button.
+
+What it skips:
+
+| Skipped | Why |
+|---|---|
+| Titles already in your library | Nothing to request |
+| Titles Seerr already has (requested, pending or available) | Someone already asked; the card shows Seerr's own state |
+| Titles that never resolved to a TMDb id | No id, no request |
+| Everything below the threshold | That is the threshold's job |
+| Everything, if Seerr is unreachable | The scan still succeeds; the status line says so |
+
+Titles hidden with ✕ never reach this point — they are dropped from the scan
+before it gets here.
+
+**TV follows your TV request mode.** *Request first season only* sends season 1;
+*Request all seasons* sends the lot. *Ask each time* has nobody to ask during a
+scan, so it sends the whole show — pick one of the other two if that is not what
+you want.
+
+**You can always see what it did.** Anything sent this way carries an
+**⤴ Auto-sent** badge on its poster and an **Auto-sent to Seerr ✓** button
+instead of the normal Add button, and the status line names what went out
+(*"⤴ Auto-sent 2 titles to Seerr (match ≥ 90%) — Midnight Dispatch, The Copper
+Line."*). The badge is stored, so it is still there after a reload. Settings →
+Status shows whether the feature is on and at what threshold.
+
+> The match % is the AI's own estimate, and it is generous with itself. Start at
+> 90 and watch a scan or two before lowering it — every request spends download
+> bandwidth and disk.
 
 ## Requirements
 
@@ -136,7 +176,7 @@ Available tags: `latest` (newest build of `main`), `sha-abc1234` (an exact commi
 
 ## Configuration
 
-Secrets and startup options live in `.env`. Day-to-day preferences (default users, batch size, TV request mode, default sort/filter) are edited in the app's **Settings** panel and stored in SQLite — those take effect immediately, no restart.
+Secrets and startup options live in `.env`. Day-to-day preferences (default users, batch size, TV request mode, auto-send threshold, default sort/filter) are edited in the app's **Settings** panel and stored in SQLite — those take effect immediately, no restart.
 
 After editing `.env`, apply it with `docker compose up -d --force-recreate`.
 
@@ -194,6 +234,10 @@ On Plex (`tautulli`), Tautulli supplies users, history *and* the ownership check
 |---|---|---|
 | `SEERR_URL` | `http://192.168.1.5:5055` | Your Overseerr or Jellyseerr address |
 | `SEERR_API_KEY` | — | Overseerr/Jellyseerr → Settings → General. Optional; without it the Add-to-Seerr button stays disabled |
+
+Requests are always filed under the API key's own Overseerr/Jellyseerr account —
+that applies to the button and to [auto-send](#auto-sending-high-matches-to-seerr)
+alike, so give that account whatever approval rules you want jellylook to obey.
 
 ### AI provider
 
@@ -286,6 +330,7 @@ Every push to `main` runs [the workflow](.github/workflows/docker-publish.yml), 
 5. Anything the model returned that those viewers had hidden is dropped here — after resolution, matched on TMDb id rather than on the title text.
 6. Titles already in your library are flagged (Jellyfin matches on IMDb/TMDb ids; Plex matches on title + year via Tautulli); anything you've already watched is dropped.
 7. Results land in SQLite and render 20 per page.
+8. If you have set an [auto-send threshold](#auto-sending-high-matches-to-seerr), the qualifying titles are filed with Seerr now — after the results are saved, so a Seerr outage costs the scan nothing — and each one is badged as auto-sent.
 
 The match % is the model's own similarity estimate — directionally useful, not science.
 
@@ -295,6 +340,7 @@ The match % is the model's own similarity estimate — directionally useful, not
 - **Container exits at startup** — jellylook fails fast on missing config and prints exactly which `.env` variables it needs. Check `docker compose logs jellylook`.
 - **No users / scan fails immediately** — the history source (Jellystat, Tautulli or Jellyfin) is unreachable or the API key is wrong. The URLs must be reachable *from inside the container* (use LAN IPs, not `localhost`).
 - **Add to Seerr disabled** — Seerr didn't answer; cards still work and the button returns when Seerr does.
+- **Auto-send didn't send anything** — the status line after a scan says why. The usual causes are Seerr being unreachable, nothing in the batch clearing the threshold, or the qualifying titles already being in your library or already requested (all three are skipped on purpose). Set `LOG_LEVEL=INFO` and check `docker compose logs jellylook` for the per-title decisions.
 - **OMDb limit** — the free key allows 1,000 lookups/day. The cache makes re-scans nearly free; Settings shows today's count.
 - **"returned no usable recommendations"** — the model answered but gave nothing back. Usually a small local model ignoring the JSON format, or an exclude list so long there was nothing left to suggest. Try a larger model, or lower `EXCLUDE_BUDGET`.
 - **A genre filter hides older titles** — recommendations scanned before this version have no genre data, and jellylook won't claim an unknown genre is a match. The status line says how many were held back; they age out on their own.
@@ -303,7 +349,7 @@ The match % is the model's own similarity estimate — directionally useful, not
 
 ## Security
 
-jellylook has **no built-in authentication** — it is designed to run on a trusted home LAN. Anyone who can reach the port can trigger scans (which spend your AI provider credits), change app settings, and file Overseerr/Jellyseerr requests.
+jellylook has **no built-in authentication** — it is designed to run on a trusted home LAN. Anyone who can reach the port can trigger scans (which spend your AI provider credits), change app settings, and file Overseerr/Jellyseerr requests. With [auto-send](#auto-sending-high-matches-to-seerr) switched on, one such scan can file several requests at once — a reason to keep the port off the open internet, not to avoid the feature.
 
 - **Do not expose the port directly to the internet.** If you want remote access, put it behind a VPN (WireGuard, Tailscale) or a reverse proxy with authentication (e.g. Nginx Proxy Manager, Authelia, Caddy with basic auth).
 - To restrict it to the Docker host only, bind the port to localhost in `docker-compose.yml`: `"127.0.0.1:3045:8000"`.

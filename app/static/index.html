@@ -155,7 +155,11 @@
           <div class="chips" id="settings-user-chips"></div>
         </label>
         <label class="field">Recommendations per scan
-          <input type="number" id="set-recs" min="5" max="100" step="5" />
+          <!-- step="1": with step="5" a RECS_PER_SCAN that isn't a multiple of
+               five (say 12) makes the whole form fail HTML5 validation, and the
+               browser then blocks every save with only a bubble to show for it.
+               The server clamps to 5-100 regardless. -->
+          <input type="number" id="set-recs" min="5" max="100" step="1" />
         </label>
         <label class="field">TV request mode
           <select id="set-tvmode">
@@ -163,6 +167,20 @@
             <option value="all">Request all seasons</option>
             <option value="first">Request first season only</option>
           </select>
+        </label>
+        <label class="field">Auto-send to Seerr
+          <select id="set-auto-threshold">
+            <option value="0">Off — I'll press Add myself</option>
+            <option value="95">95% match and above</option>
+            <option value="90">90% match and above</option>
+            <option value="85">85% match and above</option>
+            <option value="80">80% match and above</option>
+            <option value="75">75% match and above</option>
+            <option value="70">70% match and above</option>
+          </select>
+          <span class="field-note">Only ever runs at the end of a scan you
+          started. Titles you already own, or that Seerr already knows about,
+          are skipped. TV follows the request mode above.</span>
         </label>
         <div class="field-row">
           <label class="field">Default sort
@@ -214,6 +232,20 @@
       row, so two people on one server keep separate taste. Tick both and the
       verdict counts for both. A scan for several people skips anything
       <em>any</em> of them has hidden.</p>
+      <h3>Auto-sending high matches to Seerr</h3>
+      <p><strong>Settings → Auto-send to Seerr</strong> sets a match % at or
+      above which jellylook files the Seerr request for you. It is
+      <strong>off</strong> until you choose a threshold, and it only ever runs
+      at the end of a scan <em>you</em> started — nothing is requested in the
+      background.</p>
+      <p>Titles already in your library, already requested, or already
+      available in Seerr are skipped. TV shows follow your <em>TV request
+      mode</em>; on <em>Ask each time</em> — which has nobody to ask during a
+      scan — the whole show is requested. Anything sent this way carries an
+      <strong>&#10514; Auto-sent</strong> badge on its poster and an
+      <strong>Auto-sent to Seerr &#10003;</strong> button, and the status line
+      names what went out. If Seerr is unreachable the scan still finishes and
+      nothing is requested.</p>
       <h3>Latest scan vs All time</h3>
       <p>The <strong>From</strong> dropdown switches between the newest batch, a
       specific earlier scan, and <strong>All time</strong> — every title

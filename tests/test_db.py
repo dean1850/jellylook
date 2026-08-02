@@ -13,7 +13,7 @@ def test_init_db_is_idempotent(fresh_db):
     with fresh_db._conn() as conn:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(recommendations)")}
     assert {"genre_ids", "runtime", "original_language", "popularity",
-            "trailer_key", "providers"} <= cols
+            "trailer_key", "providers", "auto_requested"} <= cols
 
 
 def test_add_column_upgrades_a_pre_existing_table(fresh_db):
@@ -111,6 +111,57 @@ def test_saved_view_survives_the_recommendation_being_purged(fresh_db):
     assert items[0]["title"] == "Orphan"
     assert items[0]["poster_url"] == "/o.jpg"
     assert items[0]["verdict"] == "saved"
+
+
+# --- settings ------------------------------------------------------------------------
+@pytest.mark.parametrize("raw,expected", [
+    ("0", 0), (0, 0), (-5, 0),          # off, however it is spelled
+    ("90", 90), (100, 100), (70, 70),
+    (49, 50), (140, 100),               # clamped into the supported band
+])
+def test_auto_threshold_is_clamped(fresh_db, raw, expected):
+    assert fresh_db.clamp_auto_threshold(raw) == expected
+
+
+def test_auto_threshold_rejects_nonsense(fresh_db):
+    """Callers decide what to do with a bad value; they need it to raise."""
+    for bad in ("", "ninety", None, "9o"):
+        with pytest.raises((ValueError, TypeError)):
+            fresh_db.clamp_auto_threshold(bad)
+
+
+def test_auto_request_is_off_in_a_fresh_database(fresh_db):
+    assert fresh_db.settings_effective(60)["auto_request_threshold"] == "0"
+
+
+def test_mark_auto_requested_flags_every_row_for_the_title(fresh_db):
+    """The badge has to survive into earlier scans and the all-time pool."""
+    fresh_db.insert_scan(make_scan("s1", created_at=iso(2)))
+    fresh_db.insert_scan(make_scan("s2"))
+    fresh_db.insert_recommendations("s1", [make_rec("Twice Seen", 7, scan_id="s1",
+                                                    created_at=iso(2))])
+    fresh_db.insert_recommendations("s2", [make_rec("Twice Seen", 7, scan_id="s2")])
+    assert fresh_db.mark_auto_requested("movie", 7) == 2
+    for scan in ("s1", "s2"):
+        item = fresh_db.get_recommendations(scan=scan)["items"][0]
+        assert item["auto_requested"] is True
+        assert item["seerr_status"] == "requested"
+
+
+def test_rows_are_not_auto_requested_by_default(fresh_db):
+    fresh_db.insert_scan(make_scan("s1"))
+    fresh_db.insert_recommendations("s1", [make_rec("Plain", 8)])
+    assert fresh_db.get_recommendations(scan="s1")["items"][0]["auto_requested"] is False
+
+
+def test_saved_view_reports_the_auto_badge(fresh_db):
+    """Saved/Hidden select their columns by hand, so the flag needs adding there."""
+    fresh_db.insert_scan(make_scan("s1"))
+    fresh_db.insert_recommendations("s1", [make_rec("Kept", 9)])
+    fresh_db.mark_auto_requested("movie", 9)
+    fresh_db.feedback_set(["u1"], "movie", 9, "saved", "Kept")
+    item = fresh_db.get_feedback_items(["u1"], "saved")["items"][0]
+    assert item["auto_requested"] is True
 
 
 # --- browsing ------------------------------------------------------------------------

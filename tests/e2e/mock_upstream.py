@@ -278,6 +278,15 @@ async def seerr_request(payload: dict):
     return JSONResponse({"id": 1}, status_code=201)
 
 
+@app.post("/seerr/_reset")
+async def seerr_reset():
+    """Forget every request. Not part of the Seerr API — the auto-send tests
+    need it, because a title Seerr already knows about is deliberately skipped,
+    which would otherwise make the suite pass only on a freshly started mock."""
+    _requested.clear()
+    return {"ok": True}
+
+
 # --- OpenAI-compatible LLM -----------------------------------------------------------
 @app.post("/llm/v1/chat/completions")
 async def llm(request: Request):
