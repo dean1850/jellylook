@@ -217,6 +217,22 @@ select {
 .status-line { color: var(--muted); min-height: 1.4em; margin: 16px 0 4px; }
 .status-line.is-error { color: #ff7a7a; }
 
+/* Background scan landed while the page was open. Sits above the status line
+   so it reads as news about the grid, not as the result of something you did. */
+.fresh-scan {
+  display: flex; align-items: center; gap: 10px; margin-top: 16px;
+  padding: 9px 10px 9px 14px; font-size: 13.5px; color: var(--text);
+  background: var(--surface); border: 1px solid var(--surface-2);
+  border-left: 3px solid var(--jf-blue); border-radius: 9px;
+}
+.fresh-scan span { flex: 1; }
+.fresh-scan-show {
+  background: transparent; border: 1px solid var(--jf-blue); color: var(--jf-blue);
+  border-radius: 8px; padding: 5px 12px; font-family: inherit; font-size: 13px;
+  cursor: pointer;
+}
+.fresh-scan-show:hover { background: rgba(0, 164, 220, 0.12); }
+
 /* --- grid + cards ------------------------------------------------------------ */
 .grid {
   display: grid;
@@ -498,6 +514,9 @@ input[type="checkbox"] { accent-color: var(--jf-blue); }
   display: block; margin-top: 6px; font-size: 12.5px; line-height: 1.45;
   color: var(--muted); opacity: 0.8;
 }
+/* The one note that is an obstacle rather than an aside: the server refuses
+   this save, so it has to read as a blocker before the button is pressed. */
+.field-note.is-warning { color: var(--danger); opacity: 1; }
 .field input[type="number"], .field select {
   display: block; width: 100%; margin-top: 5px;
   background: var(--surface-2); border: 1px solid var(--surface-2);

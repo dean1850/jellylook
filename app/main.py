@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 
-from . import db, history, http, recommender, seerr
+from . import db, history, http, recommender, scheduler, seerr
 from .config import get_settings
 from .recommender import ScanError
 
@@ -63,12 +63,16 @@ async def lifespan(app: FastAPI):
                  db.purge_old(s.retention_days, s.max_retention_days))
     except Exception:
         log.exception("startup purge failed")
-    task = asyncio.create_task(
-        _purge_loop(s.retention_days, s.max_retention_days))
+    tasks = [
+        asyncio.create_task(
+            _purge_loop(s.retention_days, s.max_retention_days)),
+        asyncio.create_task(scheduler.run_loop(_autoscan_runner)),
+    ]
     try:
         yield
     finally:
-        task.cancel()
+        for task in tasks:
+            task.cancel()
         await http.shutdown()
 
 
@@ -97,8 +101,9 @@ async def status(users: str | None = None):
         "retention_days": s.retention_days,
         "max_retention_days": s.max_retention_days,
         "omdb_today": db.omdb_today(),
-        "omdb_limit": 1000,
+        "omdb_limit": db.OMDB_DAILY_LIMIT,
         "seerr_reachable": await seerr.ping(),
+        "autoscan": scheduler.status(),
         "last_scans": db.list_scans(5),
         "feedback": db.feedback_counts(user_ids),
         "all_time_total": db.all_time_total(user_ids),
@@ -125,6 +130,7 @@ _SETTING_CHOICES = {
     "tv_request_mode": {"ask", "all", "first"},
     "default_sort": {"match", "imdb", "year"},
     "default_filter": {"all", "movie", "tv"},
+    "autoscan_interval": set(db.AUTOSCAN_INTERVALS),
 }
 
 
@@ -149,6 +155,30 @@ def _validate_setting(key: str, value: str) -> str:
     return value  # default_user_ids: free-form id list
 
 
+def _check_autoscan_has_users(validated: dict) -> None:
+    """Refuse to leave a schedule armed with nobody to scan for.
+
+    Checked against the state the save would *produce*, so it catches both
+    directions: turning the schedule on without default users, and clearing
+    the default users while a schedule is on. Rejecting is kinder than
+    accepting — a schedule that silently never runs is the worst outcome of
+    the three, and the one the user finds out about a month later.
+    """
+    if not {"autoscan_interval", "default_user_ids"} & set(validated):
+        return
+    stored = db.settings_get_all()
+    interval = validated.get("autoscan_interval",
+                             stored.get("autoscan_interval", "off"))
+    if not db.autoscan_seconds(interval):
+        return  # off is always allowed, whoever is or isn't ticked
+    users = validated.get("default_user_ids", stored.get("default_user_ids", ""))
+    if not [part for part in str(users).split(",") if part.strip()]:
+        raise HTTPException(
+            400, "Automatic scans need at least one default user — an "
+                 "unattended scan has nobody to scan for otherwise. Tick "
+                 "someone above, or set Automatic scans to Off.")
+
+
 @app.post("/api/settings")
 async def settings_post(payload: dict):
     # Validate everything first so a bad value can't half-apply the payload.
@@ -156,6 +186,7 @@ async def settings_post(payload: dict):
         str(key): _validate_setting(str(key), str(value))
         for key, value in payload.items() if key in db.ALLOWED_SETTINGS
     }
+    _check_autoscan_has_users(validated)
     env_defaults = {
         "recs_per_scan": str(db.clamp_recs_per_scan(get_settings().recs_per_scan)),
     }
@@ -171,35 +202,71 @@ async def settings_post(payload: dict):
 
 
 # --- scan -----------------------------------------------------------------------
-async def _run_scan_task(user_ids: list[str]) -> None:
+async def _run_scan_task(user_ids: list[str], trigger: str) -> str:
+    """Run one scan, recording its outcome in _scan_state.
+
+    Returns a result string for the scheduler — scheduler.OK, or a short
+    description of what went wrong, which Settings → Status shows verbatim.
+    """
     try:
-        scan = await recommender.run_scan(user_ids, progress=_scan_state)
+        scan = await recommender.run_scan(user_ids, progress=_scan_state,
+                                          trigger=trigger)
         _scan_state.update({"state": "done", "scan_id": scan.id,
                             "item_count": scan.item_count,
-                            "status": scan.status})
+                            "status": scan.status, "trigger": trigger})
+        return scheduler.OK
     except ScanError as exc:
         log.warning("scan failed: %s", exc)
         _scan_state.update({"state": "failed", "error": str(exc)})
+        return f"error: {exc}"
     except Exception as exc:
         log.exception("scan crashed")
         _scan_state.update({"state": "failed",
                             "error": f"Unexpected error: {exc}"})
+        return f"error: {exc}"
+
+
+async def _start_scan(user_ids: list[str],
+                      trigger: str = "manual") -> asyncio.Task | None:
+    """Start a scan unless one is already running. Returns the task, or None.
+
+    The single door into a scan, used by both the button and the scheduler, so
+    the two share one lock and one status dict and can never overlap.
+    """
+    global _scan_task
+    async with _scan_lock:
+        # Check-and-set inside the lock so two simultaneous starts can't both
+        # pass the "running" test and begin overlapping scans.
+        if _scan_state.get("state") == "running":
+            return None
+        _scan_state.clear()
+        _scan_state.update({"state": "running", "step": "starting",
+                            "trigger": trigger})
+        _scan_task = asyncio.create_task(_run_scan_task(user_ids, trigger))
+        return _scan_task
+
+
+async def _autoscan_runner(user_ids: list[str]) -> str:
+    """Start a scheduled scan and wait for it to finish.
+
+    Injected into scheduler.run_loop() rather than the scheduler reaching into
+    recommender itself — that is what keeps unattended scans on the same lock
+    as the button, and what lets the UI's existing poll narrate one.
+    """
+    task = await _start_scan(user_ids, trigger="auto")
+    if task is None:
+        log.info("autoscan skipped: a scan is already running")
+        return scheduler.BUSY
+    return await task
 
 
 @app.post("/api/scan")
 async def scan(payload: dict):
-    global _scan_task
     user_ids = payload.get("user_ids") or []
     if not user_ids or not isinstance(user_ids, list):
         raise HTTPException(400, "user_ids (non-empty list) is required")
-    async with _scan_lock:
-        # Check-and-set inside the lock so two simultaneous POSTs can't both
-        # pass the "running" test and start overlapping scans.
-        if _scan_state.get("state") == "running":
-            raise HTTPException(409, "A scan is already running")
-        _scan_state.clear()
-        _scan_state.update({"state": "running", "step": "starting"})
-        _scan_task = asyncio.create_task(_run_scan_task([str(u) for u in user_ids]))
+    if await _start_scan([str(u) for u in user_ids]) is None:
+        raise HTTPException(409, "A scan is already running")
     return {"started": True}
 
 

@@ -123,6 +123,15 @@
       </div>
     </section>
 
+    <!-- Raised when an automatic scan lands while this page is open. Offers
+         the new batch rather than swapping it in — moving cards out from under
+         someone mid-read is worse than a stale grid. -->
+    <div class="fresh-scan" id="fresh-scan" role="status" aria-live="polite" hidden>
+      <span id="fresh-scan-text">A new scan finished in the background.</span>
+      <button class="fresh-scan-show" id="fresh-scan-show">Show it</button>
+      <button class="icon-btn" id="fresh-scan-dismiss" aria-label="Dismiss">&times;</button>
+    </div>
+
     <p class="status-line" id="status-line" role="status" aria-live="polite"></p>
 
     <section class="grid" id="grid" aria-label="Recommendations"></section>
@@ -178,9 +187,22 @@
             <option value="75">75% match and above</option>
             <option value="70">70% match and above</option>
           </select>
-          <span class="field-note">Only ever runs at the end of a scan you
-          started. Titles you already own, or that Seerr already knows about,
-          are skipped. TV follows the request mode above.</span>
+          <span class="field-note">Runs at the end of every scan, including
+          automatic ones. Titles you already own, or that Seerr already knows
+          about, are skipped. TV follows the request mode above.</span>
+        </label>
+        <label class="field">Automatic scans
+          <select id="set-autoscan">
+            <option value="off">Off — I'll press Scan myself</option>
+            <option value="5h">Every 5 hours</option>
+            <option value="1d">Every day</option>
+            <option value="1w">Every week</option>
+            <option value="1m">Every month</option>
+          </select>
+          <span class="field-note" id="autoscan-note">Scans on its own for the
+          default user(s) above, whether or not this page is open. Pressing
+          Scan yourself resets the clock. Pair it with Auto-send to Seerr and
+          new titles are requested without you lifting a finger.</span>
         </label>
         <div class="field-row">
           <label class="field">Default sort
@@ -232,12 +254,35 @@
       row, so two people on one server keep separate taste. Tick both and the
       verdict counts for both. A scan for several people skips anything
       <em>any</em> of them has hidden.</p>
+      <h3>Automatic scans</h3>
+      <p><strong>Settings → Automatic scans</strong> runs a scan on its own
+      every 5 hours, day, week or month. It is <strong>off</strong> by default.
+      An unattended scan has no one at the keyboard, so it runs for the
+      <em>default user(s)</em> you tick in Settings — pick at least one, or the
+      schedule has nobody to scan for and won't start.</p>
+      <p>The interval counts from the last scan of <em>any</em> kind, so
+      pressing Scan yourself pushes the next automatic one a full interval out.
+      The clock lives in the database rather than in memory, so a weekly
+      schedule still fires weekly across restarts, and a scan that came due
+      while the container was down runs shortly after it comes back.</p>
+      <p>It stands aside when it should: never while another scan is running,
+      and not when OMDb's daily lookup quota is nearly spent — a scan
+      <em>you</em> press should always have ratings to work with. A failed
+      automatic scan tries again an hour later rather than waiting out the
+      whole interval. <strong>Settings → Status</strong> shows the schedule,
+      when the next one is due, and whether the last one failed.</p>
+      <p>Turn this on together with <em>Auto-send to Seerr</em> and jellylook
+      runs unattended end to end: it finds new titles on your schedule and
+      requests the ones above your match %, with no one watching. Scans that
+      ran by themselves are marked <em>automatic</em> in the header and in the
+      <strong>From</strong> dropdown, so a batch of overnight requests can
+      always be traced back to the scan that filed them.</p>
       <h3>Auto-sending high matches to Seerr</h3>
       <p><strong>Settings → Auto-send to Seerr</strong> sets a match % at or
       above which jellylook files the Seerr request for you. It is
-      <strong>off</strong> until you choose a threshold, and it only ever runs
-      at the end of a scan <em>you</em> started — nothing is requested in the
-      background.</p>
+      <strong>off</strong> until you choose a threshold, and it runs at the end
+      of every scan — one you started, or one the schedule above ran for
+      you.</p>
       <p>Titles already in your library, already requested, or already
       available in Seerr are skipped. TV shows follow your <em>TV request
       mode</em>; on <em>Ask each time</em> — which has nobody to ask during a

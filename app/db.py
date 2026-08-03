@@ -88,6 +88,11 @@ ADDED_COLUMNS = [
     # Set when a scan filed the Seerr request by itself, so the card can say so
     # rather than looking like the user pressed the button.
     ("recommendations", "auto_requested", "INTEGER DEFAULT 0"),
+    # manual | auto. The DEFAULT is what makes this safe on an existing
+    # database: SQLite backfills it, so scans predating the scheduler read
+    # back as 'manual' — which is every scan they could possibly have been —
+    # rather than as NULL for each reader to interpret.
+    ("scans", "trigger", "TEXT DEFAULT 'manual'"),
 ]
 
 DEFAULT_SETTINGS = {
@@ -99,7 +104,17 @@ DEFAULT_SETTINGS = {
     # request itself. Off by default: nothing may spend a download slot until
     # the user asks for it.
     "auto_request_threshold": "0",
+    # off | 5h | 1d | 1w | 1m — how often a scan runs with nobody watching.
+    # Off by default, for the same reason: an unattended scan spends an LLM
+    # call, and paired with auto_request_threshold it spends download slots.
+    "autoscan_interval": "off",
 }
+
+# Written by the scheduler, not by the user, so they are deliberately absent
+# from ALLOWED_SETTINGS — POST /api/settings cannot forge a scan history. They
+# still live in app_settings because they are small, single-valued and want the
+# same durability as everything else there.
+AUTOSCAN_STATE_KEYS = ("autoscan_last_attempt_at", "autoscan_last_result")
 
 # Settings whose default comes from .env rather than from DEFAULT_SETTINGS.
 # They are deliberately NOT seeded: a missing row means "use the .env value",
@@ -138,6 +153,32 @@ def clamp_auto_threshold(value: object) -> int:
     """
     n = int(value)
     return 0 if n <= 0 else max(AUTO_REQUEST_MIN, min(100, n))
+
+
+# How often an unattended scan may run. A month is 30 days rather than a
+# calendar month: the schedule is an interval between scans, not a date in the
+# diary, and "the 31st" has no answer in February.
+AUTOSCAN_INTERVALS = {
+    "off": 0,
+    "5h": 5 * 3600,
+    "1d": 24 * 3600,
+    "1w": 7 * 24 * 3600,
+    "1m": 30 * 24 * 3600,
+}
+
+# OMDb's free tier. Shown in Settings, and the ceiling the scheduler keeps a
+# scan's worth of headroom under.
+OMDB_DAILY_LIMIT = 1000
+
+
+def autoscan_seconds(value: object) -> int:
+    """Interval length in seconds; 0 for off or for anything unrecognised.
+
+    Unlike the clamp_* helpers this never raises. A stored value that is no
+    longer a valid choice means the schedule is off, which is the safe reading
+    — an unattended scan should not run because a setting was misspelt.
+    """
+    return AUTOSCAN_INTERVALS.get(str(value or "off"), 0)
 
 
 SORT_SQL = {
@@ -340,6 +381,55 @@ def settings_set(key: str, value: str) -> None:
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
         )
+
+
+# --- autoscan state -----------------------------------------------------------
+def last_scan_at() -> str | None:
+    """When the newest scan of any kind ran, or None if there has never been one.
+
+    This is what anchors the schedule, which is why it deliberately does not
+    filter on trigger: a scan you pressed yourself counts, so the next
+    unattended one lands a full interval after it rather than on its heels.
+    """
+    with _conn() as conn:
+        row = conn.execute("SELECT MAX(created_at) AS at FROM scans").fetchone()
+    return row["at"] if row and row["at"] else None
+
+
+def autoscan_state() -> dict:
+    """Last attempt time and outcome. Empty strings when it has never run."""
+    values = settings_get_all()
+    return {key: values.get(key, "") for key in AUTOSCAN_STATE_KEYS}
+
+
+def autoscan_record_attempt(when: str) -> None:
+    """Mark an unattended scan as started.
+
+    Written *before* the scan runs, not after, so a scan that crashes the
+    process still moves the clock. Without that, a reproducible crash would
+    turn the schedule into a restart loop.
+    """
+    settings_set("autoscan_last_attempt_at", when)
+    settings_set("autoscan_last_result", "running")
+
+
+def autoscan_record_result(result: str) -> None:
+    """Record how the last unattended scan ended, for Settings → Status."""
+    settings_set("autoscan_last_result", result)
+
+
+def autoscan_restore_state(state: dict) -> None:
+    """Put back a snapshot from autoscan_state().
+
+    Used when an attempt turns out not to have started — the schedule must not
+    show a scan it never ran, because the panel reports that time to the user.
+    """
+    for key in AUTOSCAN_STATE_KEYS:
+        value = state.get(key, "")
+        if value:
+            settings_set(key, value)
+        else:
+            settings_clear(key)
 
 
 # --- OMDb quota ---------------------------------------------------------------
@@ -555,10 +645,11 @@ def insert_scan(scan) -> None:
     with _conn() as conn:
         conn.execute(
             "INSERT INTO scans(id, created_at, source_users, provider, model, "
-            "item_count, duration_ms, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "item_count, duration_ms, status, trigger) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (d["id"], d["created_at"], d["source_users"], d.get("provider"),
              d.get("model"), d.get("item_count", 0), d.get("duration_ms", 0),
-             d.get("status", "ok")),
+             d.get("status", "ok"), d.get("trigger") or "manual"),
         )
 
 

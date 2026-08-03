@@ -42,7 +42,7 @@ jobs:
       # Fast, offline, no API keys. Runs before the image build so a logic
       # regression fails in seconds rather than after a multi-arch build.
       - name: Run unit tests
-        run: python -m pytest tests/test_db.py tests/test_llm.py tests/test_recommender.py -q
+        run: python -m pytest tests/test_db.py tests/test_llm.py tests/test_recommender.py tests/test_scheduler.py -q
 
       - name: Install Playwright Chromium
         run: python -m playwright install --with-deps chromium

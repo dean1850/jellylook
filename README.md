@@ -35,7 +35,8 @@ Tell it what you liked and what you didn't, and the next scan listens. Dark-only
 - **Latest scan or all time** — browse one batch, or every title suggested inside the retention window, deduplicated and newest-first.
 - **Match %** and **"Because you watched \<seed\>"** on every card, so you can see why each title was suggested.
 - **Add to Seerr** — movies request in one click, TV opens a season picker. Titles you already own show an "In library" chip instead.
-- **Auto-send the sure things** — optionally let a scan file its own Seerr requests for anything over a match % you choose. Off by default, never runs on its own, and everything it sends is badged. [More below](#auto-sending-high-matches-to-seerr).
+- **Auto-send the sure things** — optionally let a scan file its own Seerr requests for anything over a match % you choose. Off by default, and everything it sends is badged. [More below](#auto-sending-high-matches-to-seerr).
+- **Set it and forget it** — optionally scan every 5 hours, day, week or month. Pair it with auto-send and jellylook finds and requests new titles with nobody watching. Off by default. [More below](#automatic-scans).
 - **Jellystat (or Tautulli) is the taste signal**; Jellyfin is used only for the ownership check and as a fallback history source. On a Plex setup, Tautulli covers users, history and the ownership check by itself — no Jellyfin needed.
 - SQLite storage, metadata cache (keeps you under OMDb's 1,000/day free limit — today's usage shows in Settings), automatic purge with a one-year hard ceiling.
 - Single container: FastAPI + vanilla HTML/CSS/JS. No database server, no telemetry, no third-party embeds.
@@ -69,9 +70,10 @@ If a title comes back at 94% and you were always going to request it, jellylook
 can file that request for you. **Settings → Auto-send to Seerr** sets the match
 % at or above which it does — 70 to 95, or **Off**, which is the default.
 
-**It only ever runs at the end of a scan you started.** There is no background
-job and no schedule: press Scan, and once the results have landed the qualifying
-titles go out. Nothing is requested if you never press the button.
+**It runs at the end of every scan** — one you pressed, or one
+[the schedule](#automatic-scans) ran for you. On its own it never starts
+anything: with **Automatic scans** off, nothing is requested unless you press
+Scan. Turn both on and the pair runs unattended end to end.
 
 What it skips:
 
@@ -101,6 +103,55 @@ Status shows whether the feature is on and at what threshold.
 > The match % is the AI's own estimate, and it is generous with itself. Start at
 > 90 and watch a scan or two before lowering it — every request spends download
 > bandwidth and disk.
+
+## Automatic scans
+
+**Settings → Automatic scans** runs a scan by itself every **5 hours**, **day**,
+**week** or **month**. **Off** is the default, and off means off: no timer, no
+call, nothing.
+
+Set it together with [Auto-send to Seerr](#auto-sending-high-matches-to-seerr)
+and jellylook needs you for nothing at all — it finds new titles on your
+schedule and requests the ones above your match %, whether or not anybody has
+the page open.
+
+**It scans for your default user(s).** An unattended scan has nobody at the
+keyboard to tick *who's watching*, so it uses the **Default user(s)** chips in
+Settings. Pick at least one: saving a schedule without them is refused rather
+than accepted and silently never run.
+
+**The interval counts from the last scan of any kind.** Press Scan yourself at
+2pm on a daily schedule and the next automatic one is 2pm tomorrow — you already
+have fresh recommendations, so the scheduler has nothing to add.
+
+**It survives restarts.** The clock is a timestamp in the database, not a
+countdown in memory, so a weekly schedule still fires weekly on a host that
+reboots nightly. A scan that came due while the container was down runs a couple
+of minutes after it comes back.
+
+When it stands aside:
+
+| Skipped | Why |
+|---|---|
+| While another scan is running | One scan at a time; it goes at the next check |
+| When OMDb's daily quota is nearly spent | A scan *you* press should still have ratings to work with. Resets at midnight UTC |
+| When no default user is set | Nobody to scan for |
+
+A scan that fails tries again **an hour** later rather than waiting out the whole
+interval — on a monthly schedule the alternative is one transient API error
+costing you a month.
+
+**You can always see what it did.** Scans that ran by themselves are marked
+*automatic* in the header and with a ⏱ in the **From** dropdown, so a batch of
+overnight Seerr requests traces back to the scan that filed it. Settings →
+Status shows the schedule, when the next scan is due, and whether the last one
+failed. If a scheduled scan lands while you have the page open, a bar offers the
+new batch — it never swaps the grid out from under you.
+
+> A 5-hour schedule is about five AI calls a day. That is pennies on a hosted
+> provider and free on Ollama, but the OMDb free tier is 1,000 lookups a day and
+> a full scan can want 60 of them. Daily is the sensible default; reach for 5
+> hours only if your household actually watches that much.
 
 ## Requirements
 
@@ -294,7 +345,7 @@ OMDb, Seerr and the LLM.
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
-python -m pytest tests/test_db.py tests/test_llm.py tests/test_recommender.py -q   # ~4s
+python -m pytest tests/test_db.py tests/test_llm.py tests/test_recommender.py tests/test_scheduler.py -q   # ~7s
 
 python -m playwright install chromium
 tests/e2e/harness.sh start
@@ -334,6 +385,11 @@ Every push to `main` runs [the workflow](.github/workflows/docker-publish.yml), 
 
 The match % is the model's own similarity estimate — directionally useful, not science.
 
+Every step above is the same whether you pressed Scan or
+[the schedule](#automatic-scans) started it. The only differences are where the
+user list comes from — the *who's watching* chips, or your default user(s) — and
+that the scan is recorded as automatic.
+
 ## Troubleshooting
 
 - **`docker compose pull` says `denied` / `unauthorized`** — the image you're pulling is a private package. `ghcr.io/dean1850/jellylook` is public and needs no login; on a fork, check your own package's visibility (see [Building from source](#building-from-source)).
@@ -341,7 +397,8 @@ The match % is the model's own similarity estimate — directionally useful, not
 - **No users / scan fails immediately** — the history source (Jellystat, Tautulli or Jellyfin) is unreachable or the API key is wrong. The URLs must be reachable *from inside the container* (use LAN IPs, not `localhost`).
 - **Add to Seerr disabled** — Seerr didn't answer; cards still work and the button returns when Seerr does.
 - **Auto-send didn't send anything** — the status line after a scan says why. The usual causes are Seerr being unreachable, nothing in the batch clearing the threshold, or the qualifying titles already being in your library or already requested (all three are skipped on purpose). Set `LOG_LEVEL=INFO` and check `docker compose logs jellylook` for the per-title decisions.
-- **OMDb limit** — the free key allows 1,000 lookups/day. The cache makes re-scans nearly free; Settings shows today's count.
+- **Automatic scans aren't happening** — Settings → Status says which of the three it is. *"not running (no default user)"* means nothing is ticked under **Default user(s)**. *"next in …"* means it simply isn't due yet — the clock counts from your last scan of any kind, including manual ones. *"last run failed"* means it tried; `LOG_LEVEL=INFO` and `docker compose logs jellylook` will name the reason, and it retries within the hour.
+- **OMDb limit** — the free key allows 1,000 lookups/day. The cache makes re-scans nearly free; Settings shows today's count. A scheduled scan stands down when a full scan wouldn't fit in what's left, so the quota is there for the scans you press.
 - **"returned no usable recommendations"** — the model answered but gave nothing back. Usually a small local model ignoring the JSON format, or an exclude list so long there was nothing left to suggest. Try a larger model, or lower `EXCLUDE_BUDGET`.
 - **A genre filter hides older titles** — recommendations scanned before this version have no genre data, and jellylook won't claim an unknown genre is a match. The status line says how many were held back; they age out on their own.
 - **No streaming logos** — check `TMDB_REGION` matches a country TMDb has data for, and remember availability is recorded at scan time, so existing cards keep the region they were scanned under.
@@ -358,6 +415,10 @@ jellylook has **no built-in authentication** — it is designed to run on a trus
 ## Privacy
 
 jellylook sends your recent watch **titles** (not full history, not identities) to whichever AI provider you configure, and title lookups to TMDb and OMDb. Titles you save or hide are sent too, as examples of what to lean toward and away from. If you'd rather nothing leaves your network, point `LLM_PROVIDER=ollama` at a local model — then only the TMDb/OMDb metadata lookups go out.
+
+Those requests go out when a scan runs. Out of the box that is only when you
+press Scan; turning on [Automatic scans](#automatic-scans) is what puts them on
+a schedule instead.
 
 Trailers are **links**, not embedded players: nothing loads from Google unless
 you click through. Posters and provider logos are served from TMDb's image CDN.
