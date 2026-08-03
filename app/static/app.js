@@ -26,6 +26,13 @@
     counts: { saved: 0, hidden: 0 },
     allTimeTotal: 0,
     scans: [],
+    lastScanId: null,       // newest scan this page has shown
+    freshScanId: null,      // newest scan the server has, if we haven't
+  };
+
+  const AUTOSCAN_LABELS = {
+    "5h": "every 5 hours", "1d": "every day",
+    "1w": "every week", "1m": "every month",
   };
 
   function emptyFilters() {
@@ -83,6 +90,7 @@
       if (!grid.children.length && !isFeedbackView()) {
         setStatus("Pick who's watching and hit Scan.");
       }
+      watchForBackgroundScans();
     } catch (err) {
       setStatus(`Can't reach the jellylook API. ${err.message}`, true);
     }
@@ -159,7 +167,10 @@
       const names = (scan.source_users || "").split(",")
         .map((id) => (state.users.find((u) => u.id === id) || {}).name)
         .filter(Boolean).join(", ");
-      add(scan.id, `${shortDate(scan.created_at)}${names ? ` · ${names}` : ""} · ${scan.item_count}`);
+      // "⏱" marks a scan nobody asked for, which is the one you want to find
+      // when working out where a batch of Seerr requests came from.
+      const auto = scan.trigger === "auto" ? " ⏱" : "";
+      add(scan.id, `${shortDate(scan.created_at)}${auto}${names ? ` · ${names}` : ""} · ${scan.item_count}`);
     });
     sel.value = state.scan;
     if (sel.value !== state.scan) { state.scan = "latest"; sel.value = "latest"; }
@@ -174,11 +185,15 @@
   function renderLastScan(scans) {
     const last = scans && scans[0];
     if (!last) { $("#last-scan-meta").textContent = ""; return; }
+    // Whatever we render here is, by definition, the batch this page is now
+    // showing — so it is also the mark the background check compares against.
+    state.lastScanId = last.id;
     const names = (last.source_users || "").split(",")
       .map((id) => (state.users.find((u) => u.id === id) || {}).name || null)
       .filter(Boolean).join(", ");
+    const auto = last.trigger === "auto" ? " · automatic" : "";
     $("#last-scan-meta").textContent =
-      `last scan · ${relTime(last.created_at)}${names ? " · " + names : ""}`;
+      `last scan · ${relTime(last.created_at)}${auto}${names ? " · " + names : ""}`;
   }
 
   function relTime(iso) {
@@ -186,6 +201,15 @@
     if (mins < 60) return `${Math.round(mins)}m ago`;
     if (mins < 1440) return `${Math.round(mins / 60)}h ago`;
     return `${Math.round(mins / 1440)}d ago`;
+  }
+
+  /** How long until a scheduled scan, said the way a person would. */
+  function relFuture(iso) {
+    const mins = (Date.parse(iso) - Date.now()) / 60000;
+    if (!(mins > 0)) return "due now";
+    if (mins < 60) return `in ${Math.round(mins)}m`;
+    if (mins < 1440) return `in ${Math.round(mins / 60)}h`;
+    return `in ${Math.round(mins / 1440)}d`;
   }
 
   /* ---- scan ------------------------------------------------------------- */
@@ -244,6 +268,8 @@
         setStatus("");
         const status = await api(`/api/status?users=${encodeURIComponent(userParam())}`);
         state.seerrReachable = !!status.seerr_reachable;
+        // This scan is newer than anything the background check was offering.
+        hideFreshScan();
         renderLastScan(status.last_scans);
         await refreshSidebarState();
         await loadRecommendations();
@@ -260,6 +286,74 @@
   }
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /* ---- background scans ---------------------------------------------------
+     A scheduled scan can land while this page sits open, as can a scan someone
+     else started in another window. Offer the new batch instead of swapping it
+     in: pulling cards out from under a reader is worse than a stale grid. */
+  const FRESH_CHECK_MS = 60000;
+
+  function watchForBackgroundScans() {
+    setInterval(checkForFreshScan, FRESH_CHECK_MS);
+    // Coming back to a tab left open overnight is the case this feature is
+    // really for, and it should not need a minute's wait.
+    document.addEventListener("visibilitychange", checkForFreshScan);
+  }
+
+  async function checkForFreshScan() {
+    // Our own scan owns the status line and calls renderLastScan when it
+    // lands, so stay out of its way entirely.
+    if (document.visibilityState !== "visible") return;
+    if (state.scanning) return;
+    // A null lastScanId is not a reason to stay quiet: it means this page
+    // loaded before there was anything to show, which is exactly the state a
+    // first scheduled scan resolves.
+    let newest;
+    try {
+      newest = ((await api("/api/scans?limit=1")).scans || [])[0];
+    } catch (_) {
+      return;  // a missed poll is not worth telling anyone about
+    }
+    if (!newest || newest.id === state.lastScanId
+        || newest.id === state.freshScanId) return;
+    state.freshScanId = newest.id;
+    const n = newest.item_count || 0;
+    const titles = `${n} suggestion${n === 1 ? "" : "s"}`;
+    $("#fresh-scan-text").textContent = newest.trigger === "auto"
+      ? `An automatic scan just finished — ${titles} waiting.`
+      : `A scan finished in another window — ${titles} waiting.`;
+    $("#fresh-scan").hidden = false;
+  }
+
+  function hideFreshScan() {
+    $("#fresh-scan").hidden = true;
+    state.freshScanId = null;
+  }
+
+  $("#fresh-scan-dismiss").addEventListener("click", () => {
+    // Dismissing counts as having seen the batch, so it must not come back.
+    state.lastScanId = state.freshScanId || state.lastScanId;
+    hideFreshScan();
+  });
+
+  $("#fresh-scan-show").addEventListener("click", async () => {
+    hideFreshScan();
+    state.page = 1;
+    state.scan = "latest";
+    if (isFeedbackView()) state.filter = "all";
+    syncFilterButtons();
+    state.seerrStatusCache.clear();
+    try {
+      const status = await api(
+        `/api/status?users=${encodeURIComponent(userParam())}`);
+      state.seerrReachable = !!status.seerr_reachable;
+      renderLastScan(status.last_scans);
+      await refreshSidebarState();
+      await loadRecommendations();
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  });
 
   /** What a scan auto-sent to Seerr, named rather than just counted.
    *  With the feature on and nothing sent, the scan's own note explains why —
@@ -946,6 +1040,7 @@
     $("#set-recs").value = settings.recs_per_scan || 60;
     $("#set-tvmode").value = settings.tv_request_mode || "ask";
     setThresholdValue(String(settings.auto_request_threshold || "0"));
+    $("#set-autoscan").value = settings.autoscan_interval || "off";
     $("#set-sort").value = settings.default_sort || "match";
     $("#set-filter").value = settings.default_filter || "all";
 
@@ -959,16 +1054,23 @@
       box.type = "checkbox";
       box.checked = defaults.has(u.id);
       box.dataset.uid = u.id;
-      box.addEventListener("change", () => label.classList.toggle("is-on", box.checked));
+      box.addEventListener("change", () => {
+        label.classList.toggle("is-on", box.checked);
+        // These chips are what an unattended scan runs for, so unticking the
+        // last one is a change to the schedule, not just to a default.
+        syncAutoscanWarning();
+      });
       label.append(box, document.createTextNode(u.name));
       wrap.appendChild(label);
     });
+    syncAutoscanWarning();
 
     const dl = $("#status-dl");
     dl.innerHTML = "";
     const fb = status.feedback || { saved: 0, hidden: 0 };
     const threshold = Number(settings.auto_request_threshold || 0);
     const rows = [
+      ["Auto scan", autoscanSummary(status.autoscan || {})],
       ["Auto-request", threshold ? `on · match ≥ ${threshold}%` : "off"],
       ["Provider", status.provider],
       ["Model", status.model],
@@ -985,6 +1087,38 @@
       dl.append(dt, dd);
     });
   }
+
+  /** The schedule in one line, including the two states that are neither on
+   *  nor off: armed with nobody to scan for, and last run failed. */
+  function autoscanSummary(auto) {
+    if (!auto.interval_seconds) return "off";
+    const every = AUTOSCAN_LABELS[auto.interval] || auto.interval;
+    if (!auto.enabled) return `${every} · not running (no default user)`;
+    const parts = [every];
+    if (auto.next_due_at) parts.push(`next ${relFuture(auto.next_due_at)}`);
+    if (auto.last_result && auto.last_result !== "ok") {
+      parts.push("last run failed");
+    }
+    return parts.join(" · ");
+  }
+
+  const AUTOSCAN_NOTE = $("#autoscan-note").textContent;
+
+  /** Automatic scans need default user(s) — the server refuses the save
+   *  otherwise, so say so before the button is pressed rather than after. */
+  function syncAutoscanWarning() {
+    const on = $("#set-autoscan").value !== "off";
+    const anyUser = !!document.querySelector("#settings-user-chips input:checked");
+    const note = $("#autoscan-note");
+    const blocked = on && !anyUser;
+    note.classList.toggle("is-warning", blocked);
+    note.textContent = blocked
+      ? "Tick at least one default user above — an unattended scan has nobody "
+        + "to scan for otherwise."
+      : AUTOSCAN_NOTE;
+  }
+
+  $("#set-autoscan").addEventListener("change", syncAutoscanWarning);
 
   /** The API accepts any 50–100 threshold, so keep a value the dropdown does
    *  not list selectable rather than blanking the control (and saving ""). */
@@ -1012,12 +1146,19 @@
           recs_per_scan: $("#set-recs").value,
           tv_request_mode: $("#set-tvmode").value,
           auto_request_threshold: $("#set-auto-threshold").value,
+          autoscan_interval: $("#set-autoscan").value,
           default_sort: $("#set-sort").value,
           default_filter: $("#set-filter").value,
         }),
       });
       state.tvRequestMode = saved.tv_request_mode;
       setThresholdValue(String(saved.auto_request_threshold || "0"));
+      // Re-read the status block: saving is what changes when the next
+      // automatic scan is due, and the panel is showing that answer.
+      try {
+        fillSettingsPanel(saved, await api(
+          `/api/status?users=${encodeURIComponent(userParam())}`));
+      } catch (_) { /* the form saved; a stale status block can wait */ }
       $("#settings-saved").textContent = "Saved.";
       setTimeout(() => { $("#settings-saved").textContent = ""; }, 2500);
     } catch (err) {

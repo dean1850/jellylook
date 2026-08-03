@@ -59,7 +59,10 @@ def reset_state():
     # must not be able to leak it into whatever runs next. The mock's requested
     # set is cleared for the same reason: an already-requested title is skipped
     # by design, so without this the suite would only pass on a fresh harness.
-    post(BASE + "/api/settings", {"auto_request_threshold": "0"})
+    # autoscan_interval goes back too: an armed schedule left behind by a
+    # failed test would have the harness scanning underneath the next one.
+    post(BASE + "/api/settings",
+         {"auto_request_threshold": "0", "autoscan_interval": "off"})
     post(MOCK + "/seerr/_reset")
     for user in ("u1", "u2"):
         for verdict in ("saved", "hidden"):
@@ -407,6 +410,113 @@ def test_settings_panel_reports_region_and_retention(page):
     assert "Streaming region" in body and "AU" in body
     assert "Kept for" in body
     assert "Saved / hidden" in body
+
+
+# --- automatic scans -------------------------------------------------------------
+def test_automatic_scans_are_off_until_asked_for(page):
+    select_user(page)
+    page.locator("#btn-settings").click()
+    expect(page.locator("#set-autoscan")).to_have_value("off")
+    assert "off" in page.locator("#status-dl").inner_text()
+
+
+def test_arming_a_schedule_round_trips(page):
+    select_user(page)
+    page.locator("#btn-settings").click()
+    try:
+        # A default user first — the schedule has nothing to scan for without
+        # one, and the save is refused.
+        page.locator("#settings-user-chips .chip", has_text="dean") \
+            .locator("input").check()
+        page.locator("#set-autoscan").select_option("1d")
+        page.locator("#settings-form button[type=submit]").click()
+        expect(page.locator("#settings-saved")).to_contain_text("Saved")
+        assert api("/api/settings")["autoscan_interval"] == "1d"
+        # The status block answers the question the setting raises: when?
+        assert "every day" in page.locator("#status-dl").inner_text()
+
+        page.keyboard.press("Escape")
+        page.locator("#btn-settings").click()
+        expect(page.locator("#set-autoscan")).to_have_value("1d")
+    finally:
+        post(BASE + "/api/settings", {"autoscan_interval": "off"})
+
+
+def test_a_schedule_with_nobody_to_scan_for_is_refused(page):
+    """The one setting that can be saved into a state that never runs, so it
+    warns before the click and the server refuses it after."""
+    select_user(page)
+    post(BASE + "/api/settings", {"autoscan_interval": "off",
+                                  "default_user_ids": ""})
+    page.locator("#btn-settings").click()
+    try:
+        page.locator("#set-autoscan").select_option("1w")
+        expect(page.locator("#autoscan-note")).to_have_class(re.compile("is-warning"))
+        expect(page.locator("#autoscan-note")).to_contain_text("default user")
+
+        page.locator("#settings-form button[type=submit]").click()
+        expect(page.locator("#settings-saved")).to_contain_text("default user")
+        assert api("/api/settings")["autoscan_interval"] == "off"
+
+        # Ticking someone clears the warning without a reload.
+        page.locator("#settings-user-chips .chip", has_text="dean") \
+            .locator("input").check()
+        expect(page.locator("#autoscan-note")).not_to_have_class(
+            re.compile("is-warning"))
+    finally:
+        post(BASE + "/api/settings", {"autoscan_interval": "off"})
+
+
+def test_a_background_scan_is_offered_not_forced(page):
+    """A scan that lands while the page is open must not move the grid by
+    itself — it raises a banner the reader can take or dismiss."""
+    select_user(page)
+    run_scan(page)
+    expect(page.locator("#fresh-scan")).to_be_hidden()
+    before = page.locator(".card-title").first.inner_text()
+
+    # Stand in for the scheduler: a scan this page did not start.
+    post(BASE + "/api/scan", {"user_ids": ["u2"]})
+    for _ in range(60):
+        if api("/api/scan/status").get("state") in ("done", "failed"):
+            break
+        page.wait_for_timeout(500)
+    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+
+    expect(page.locator("#fresh-scan")).to_be_visible()
+    expect(page.locator("#fresh-scan")).to_contain_text("suggestion")
+    # Still the old batch until the reader says otherwise.
+    assert page.locator(".card-title").first.inner_text() == before
+
+    page.locator("#fresh-scan-show").click()
+    expect(page.locator("#fresh-scan")).to_be_hidden()
+    expect(page.locator(".card").first).to_be_visible()
+
+
+def test_the_first_scan_of_all_is_offered_to_a_page_that_loaded_empty(page):
+    """First-run automation: the tab was opened before anything had ever been
+    scanned, and the schedule produced the first batch. Having no scan of its
+    own is what makes this page's news worth telling, not a reason to stay
+    quiet — the earlier version of this check bailed out here."""
+    select_user(page)
+    ensure_results(page)
+
+    def as_a_fresh_instance(route):
+        resp = route.fetch()
+        body = resp.json()
+        body["last_scans"] = []
+        route.fulfill(response=resp, body=json.dumps(body))
+
+    page.route("**/api/status*", as_a_fresh_instance)
+    page.reload()
+    page.wait_for_selector("#user-chips .chip")
+    page.wait_for_timeout(600)
+    page.unroute("**/api/status*")
+    expect(page.locator("#fresh-scan")).to_be_hidden()
+
+    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+    expect(page.locator("#fresh-scan")).to_be_visible()
+    page.locator("#fresh-scan-dismiss").click()
 
 
 def test_escape_closes_overlays(page):

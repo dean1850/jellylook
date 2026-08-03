@@ -53,9 +53,14 @@ def build_profile(watched: list[WatchedItem]) -> dict:
     return {"recently_watched": seeds[:PROFILE_SEEDS]}
 
 
-async def run_scan(user_ids: list[str],
-                   progress: dict | None = None) -> ScanRecord:
-    """Run a full scan. `progress` (optional dict) is mutated for polling."""
+async def run_scan(user_ids: list[str], progress: dict | None = None,
+                   trigger: str = "manual") -> ScanRecord:
+    """Run a full scan. `progress` (optional dict) is mutated for polling.
+
+    `trigger` is recorded on the scan row so the UI can tell a batch someone
+    asked for from one the scheduler produced overnight — which matters most
+    when auto-send has filed Seerr requests off the back of it.
+    """
     s = get_settings()
     started = time.monotonic()
     scan_id = uuid.uuid4().hex
@@ -93,7 +98,7 @@ async def run_scan(user_ids: list[str],
         step("history", f"{len(liked)} liked / {len(disliked)} rejected on file")
 
     # 3. ONE LLM call
-    n = _recs_per_scan(s.recs_per_scan)
+    n = recs_per_scan(s.recs_per_scan)
     step("llm", f"asking {s.llm_provider}/{s.llm_model} for {n} titles")
     provider = llm.get_provider(s)
     try:
@@ -190,6 +195,7 @@ async def run_scan(user_ids: list[str],
         id=scan_id, created_at=created_at, source_users=",".join(user_ids),
         provider=s.llm_provider, model=s.llm_model,
         item_count=len(recs), duration_ms=duration_ms, status=status,
+        trigger=trigger,
     )
     db.insert_scan(scan)
     db.insert_recommendations(scan_id, recs)
@@ -329,7 +335,7 @@ def _dedupe(suggestions: list[Suggestion],
     return out
 
 
-def _recs_per_scan(env_default: int) -> int:
+def recs_per_scan(env_default: int) -> int:
     """A saved Settings-panel value wins; otherwise RECS_PER_SCAN from .env."""
     try:
         return db.clamp_recs_per_scan(

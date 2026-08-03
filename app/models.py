@@ -107,3 +107,4 @@ class ScanRecord(BaseModel):
     item_count: int = 0
     duration_ms: int = 0
     status: str = "ok"
+    trigger: str = "manual"  # manual | auto (the scheduler ran it)
