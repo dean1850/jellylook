@@ -16,7 +16,10 @@ env:
 jobs:
   build:
     name: Smoke test and publish
-    runs-on: ubuntu-latest
+    # Pinned: Playwright 1.56 cannot install its browser on ubuntu-latest
+    # (now 26.04). Move this forward together with the playwright pin in
+    # requirements-dev.txt.
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -42,7 +45,9 @@ jobs:
       # Fast, offline, no API keys. Runs before the image build so a logic
       # regression fails in seconds rather than after a multi-arch build.
       - name: Run unit tests
-        run: python -m pytest tests/test_db.py tests/test_llm.py tests/test_recommender.py tests/test_scheduler.py -q
+        # The whole folder, so a new test file is never silently left out;
+        # the browser tests have their own step below.
+        run: python -m pytest tests --ignore=tests/e2e -q
 
       - name: Install Playwright Chromium
         run: python -m playwright install --with-deps chromium
