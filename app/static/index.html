@@ -316,6 +316,8 @@
       <h3>The .env knobs</h3>
       <p><code>LLM_PROVIDER</code> switches between anthropic, openai, google,
       openwebui and ollama (with <code>LLM_MODEL</code> for the model name).
+      On anthropic, <code>LLM_FALLBACK_MODEL</code> is tried when the first
+      model fails and <code>LLM_EFFORT</code> sets how hard it thinks.
       <code>HISTORY_SOURCE</code> switches between jellystat, tautulli (Plex)
       and jellyfin.
       <code>RECS_PER_SCAN</code>, <code>PER_PAGE</code> and

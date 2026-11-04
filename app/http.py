@@ -13,13 +13,16 @@ import httpx
 log = logging.getLogger("jellylook.http")
 
 DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=8.0)
-LLM_TIMEOUT = httpx.Timeout(180.0, connect=10.0)
+# Current Claude models think before answering; a fallback model may need
+# the extra headroom on a 60-title scan.
+LLM_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
 MAX_CONCURRENCY = 5
 
 _client: httpx.AsyncClient | None = None
 _semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
 
-TRANSIENT_STATUS = {429, 500, 502, 503, 504}
+# 529 is Anthropic's "overloaded" answer.
+TRANSIENT_STATUS = {429, 500, 502, 503, 504, 529}
 
 
 async def startup() -> None:

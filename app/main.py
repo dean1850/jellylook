@@ -96,6 +96,7 @@ async def status(users: str | None = None):
     return {
         "provider": s.llm_provider,
         "model": s.llm_model,
+        "fallback_model": s.fallback_model,
         "history_source": s.history_source,
         "region": s.region,
         "retention_days": s.retention_days,

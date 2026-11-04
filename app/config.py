@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 VALID_PROVIDERS = {"anthropic", "openai", "google", "openwebui", "ollama"}
 VALID_HISTORY_SOURCES = {"jellystat", "tautulli", "jellyfin"}
+VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
 
 class Settings(BaseSettings):
@@ -48,7 +49,14 @@ class Settings(BaseSettings):
 
     # llm
     llm_provider: str = "anthropic"  # anthropic | openai | google | openwebui | ollama
-    llm_model: str = "claude-haiku-4-5"
+    llm_model: str = "claude-haiku-5-5"
+    # Anthropic only: a second model tried when LLM_MODEL refuses, errors out or
+    # returns nothing usable. Empty disables it.
+    llm_fallback_model: str = "claude-sonnet-5-5"
+    # Anthropic only, current Claude models: how much the model thinks before
+    # answering (low | medium | high | xhigh | max). Older models ignore it.
+    llm_effort: str = "medium"
+    # Ignored by current Claude models, which reject non-default sampling.
     llm_temperature: float = 0.7
     anthropic_api_key: str = ""
     openai_api_key: str = ""
@@ -90,6 +98,13 @@ class Settings(BaseSettings):
         if self.history_source != "tautulli" and not self.jellyfin_api_key:
             problems.append("JELLYFIN_API_KEY required (ownership + id/poster lookups)")
 
+        if (self.llm_provider == "anthropic"
+                and self.llm_effort.strip().lower() not in VALID_EFFORTS):
+            problems.append(
+                f"LLM_EFFORT must be one of {sorted(VALID_EFFORTS)}, "
+                f"got {self.llm_effort!r}"
+            )
+
         if self.llm_provider == "anthropic" and not self.anthropic_api_key:
             problems.append("ANTHROPIC_API_KEY required when LLM_PROVIDER=anthropic")
         if self.llm_provider == "openai" and not self.openai_api_key:
@@ -111,6 +126,23 @@ class Settings(BaseSettings):
                 f"got {self.tmdb_region!r}"
             )
         return problems
+
+    @property
+    def fallback_model(self) -> str:
+        """The fallback model in effect, or "" when there is none.
+
+        Only the Anthropic adapter has one, and a fallback identical to the
+        primary model would just repeat the same call.
+        """
+        if self.llm_provider != "anthropic":
+            return ""
+        fallback = self.llm_fallback_model.strip()
+        return "" if fallback == self.llm_model.strip() else fallback
+
+    @property
+    def effort(self) -> str:
+        """LLM_EFFORT normalised to the lower-case form the API expects."""
+        return self.llm_effort.strip().lower()
 
     @property
     def region(self) -> str:

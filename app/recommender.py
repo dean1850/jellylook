@@ -107,6 +107,11 @@ async def run_scan(user_ids: list[str], progress: dict | None = None,
         # A provider that answers with nothing is a configuration or prompt-size
         # problem, not a crash — say so rather than showing a stack-trace string.
         raise ScanError(str(exc)) from exc
+    # The Anthropic adapter can answer from its fallback model; record the
+    # model that actually did, so the scan history tells the truth.
+    served_model = getattr(provider, "served_model", None) or s.llm_model
+    if served_model != s.llm_model:
+        step("llm", f"{s.llm_model} failed — answered by fallback {served_model}")
     step("llm", f"{len(suggestions)} suggestions returned")
 
     # Drop duplicates and anything matching a watched title.
@@ -193,7 +198,7 @@ async def run_scan(user_ids: list[str], progress: dict | None = None,
     status = "ok" if len(recs) >= n * 0.8 else "partial"
     scan = ScanRecord(
         id=scan_id, created_at=created_at, source_users=",".join(user_ids),
-        provider=s.llm_provider, model=s.llm_model,
+        provider=s.llm_provider, model=served_model,
         item_count=len(recs), duration_ms=duration_ms, status=status,
         trigger=trigger,
     )

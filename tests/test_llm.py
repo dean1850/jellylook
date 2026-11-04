@@ -141,3 +141,17 @@ def test_to_suggestions_drops_unusable_rows():
 def test_to_suggestions_respects_the_requested_count():
     rows = [{"title": f"T{i}", "type": "movie"} for i in range(50)]
     assert len(llm._to_suggestions(rows, 5)) == 5
+
+
+# --- truncated replies (stop_reason max_tokens) ---------------------------------------
+@pytest.mark.parametrize("raw", [
+    '{"recommendations": [{"title":"A","type":"movie"}, {"title":"B","type":"tv"}, {"tit',
+    '[{"title":"A","type":"movie"},\n {"title":"B","type":"tv"},\n {"title":"C [x',
+    '```json\n{"recommendations":[{"title":"A","type":"movie"},{"title":"B","type":"tv"},',
+])
+def test_extract_json_keeps_the_complete_entries_of_a_truncated_reply(raw):
+    assert [x["title"] for x in llm._extract_json(raw)] == ["A", "B"]
+
+
+def test_salvage_ignores_prose_that_merely_contains_a_bracket():
+    assert llm._extract_json("I can't [really] do that") == []
