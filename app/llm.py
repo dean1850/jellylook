@@ -2,11 +2,15 @@
 
 ONE call per scan returns all `n` suggestions. Every adapter implements
 _complete(system, user) -> raw text; the shared recommend() handles the
-prompt, robust JSON extraction and one stricter retry.
+prompt, robust JSON extraction and one stricter retry. The Anthropic adapter
+adds a second model (LLM_FALLBACK_MODEL) tried when the first one fails.
 """
+import copy
 import json
 import logging
 import re
+
+import httpx
 
 from . import http
 from .config import Settings
@@ -15,6 +19,14 @@ from .models import Suggestion
 log = logging.getLogger("jellylook.llm")
 
 MAX_TOKENS = 8000
+# Current Claude models think before they answer, and thinking counts toward
+# max_tokens. 16K leaves room for that plus a 60-title array, and stays inside
+# what a non-streaming request can return before an HTTP timeout.
+ANTHROPIC_MAX_TOKENS = 16000
+
+# Appended to the system prompt wherever the provider's JSON mode wants an
+# object at the root rather than a bare array.
+WRAP_HINT = ' Wrap the array as {"recommendations": [...]}.'
 
 
 class NoSuggestions(RuntimeError):
@@ -23,6 +35,18 @@ class NoSuggestions(RuntimeError):
     Distinct from a transport or auth failure so the scan can report something
     the user can act on rather than "unexpected error".
     """
+
+
+class ModelRefused(NoSuggestions):
+    """The model declined the request (stop_reason "refusal")."""
+
+
+class ProviderAPIError(RuntimeError):
+    """A non-200 answer from a provider's API."""
+
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
 
 # A handful of rejections should nudge the model, not redefine the viewer. Below
 # MIN_TASTE_EXAMPLES the taste blocks are omitted entirely — two rejected horror
@@ -126,7 +150,33 @@ def _extract_json(text: str) -> list[dict]:
             for value in data.values():
                 if isinstance(value, list):
                     return [x for x in value if isinstance(x, dict)]
-    return []
+    return _salvage_truncated(cleaned)
+
+
+def _salvage_truncated(text: str) -> list[dict]:
+    """The complete objects of an array that was cut off part-way.
+
+    A reply that hits max_tokens ends mid-object; keeping the entries before
+    the cut turns a failed scan into a partial one.
+    """
+    start = text.find("[")
+    if start == -1:
+        return []
+    decoder = json.JSONDecoder()
+    out: list[dict] = []
+    i = start + 1
+    while i < len(text):
+        while i < len(text) and text[i] in " \t\r\n,":
+            i += 1
+        if i >= len(text) or text[i] != "{":
+            break
+        try:
+            obj, i = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            break
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
 
 
 def _slice_json(text: str) -> str | None:
@@ -197,6 +247,9 @@ def _to_suggestions(raw: list[dict], n: int) -> list[Suggestion]:
 class BaseProvider:
     def __init__(self, settings: Settings):
         self.s = settings
+        # The model behind the last successful recommend(). Only the Anthropic
+        # adapter can differ from LLM_MODEL, when its fallback answered.
+        self.served_model = settings.llm_model
 
     async def _complete(self, system: str, user: str) -> str:
         raise NotImplementedError
@@ -206,6 +259,12 @@ class BaseProvider:
         liked: list[str] | None = None, disliked: list[str] | None = None,
     ) -> list[Suggestion]:
         system, user = _build_prompts(profile, n, exclude, liked, disliked)
+        return await self._recommend_once(system, user, n, self.s.llm_model)
+
+    async def _recommend_once(self, system: str, user: str, n: int,
+                              model: str) -> list[Suggestion]:
+        """One answer from the current model, plus one stricter retry if it
+        was not parseable. Raises NoSuggestions when both come back empty."""
         text = await self._complete(system, user)
         suggestions = _to_suggestions(_extract_json(text), n)
         if suggestions:
@@ -219,7 +278,7 @@ class BaseProvider:
         suggestions = _to_suggestions(_extract_json(text), n)
         if not suggestions:
             raise NoSuggestions(
-                f"{self.s.llm_provider}/{self.s.llm_model} returned no usable "
+                f"{self.s.llm_provider}/{model} returned no usable "
                 f"recommendations. Either the model isn't following the JSON "
                 f"format, or the exclude list left it nothing to suggest — try "
                 f"a larger model, or lower EXCLUDE_BUDGET."
@@ -227,27 +286,171 @@ class BaseProvider:
         return suggestions
 
 
+# Claude models from before Opus 4.7 / Sonnet 5 / Haiku 5.5. They accept
+# `temperature`, and predate effort levels, so they get the original request.
+# Everything newer - Haiku 5.5, Sonnet 5.5, and whatever comes next - rejects a
+# non-default temperature and gets effort plus structured outputs instead.
+_LEGACY_CLAUDE = re.compile(
+    r"^claude-(?:instant|2|3)"
+    r"|^claude-(?:opus|sonnet|haiku)-4(?:-[0156])?(?:-\d{8})?$"
+)
+
+
+def is_legacy_claude(model: str) -> bool:
+    return bool(_LEGACY_CLAUDE.match((model or "").strip().lower()))
+
+
+_SUGGESTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "year": {"type": "integer"},
+        "type": {"type": "string", "enum": ["movie", "tv"]},
+        "reason": {"type": "string"},
+        "match_score": {"type": "integer"},
+        "because_of": {"type": "string"},
+    },
+    "required": ["title", "year", "type", "reason", "match_score", "because_of"],
+    "additionalProperties": False,
+}
+
+# Structured outputs guarantee the answer parses. The root has to be an object,
+# which _extract_json already unwraps.
+RECOMMENDATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "recommendations": {"type": "array", "items": _SUGGESTION_SCHEMA},
+    },
+    "required": ["recommendations"],
+    "additionalProperties": False,
+}
+
+# Same key, same answer: trying another model would only fail the same way.
+_NO_FALLBACK_STATUS = {401, 403}
+
+
+def _worth_falling_back(exc: Exception) -> bool:
+    if isinstance(exc, NoSuggestions):          # includes ModelRefused
+        return True
+    if isinstance(exc, ProviderAPIError):
+        return exc.status not in _NO_FALLBACK_STATUS
+    return isinstance(exc, httpx.HTTPError)     # timeouts, connection errors
+
+
+def _relax_anthropic_payload(payload: dict, body: str) -> dict:
+    """Drop the field a 400 complains about, so one retry can succeed.
+
+    The capability check in is_legacy_claude() is a guess for model names it
+    has not seen; this keeps a wrong guess from failing the scan.
+    """
+    retry = copy.deepcopy(payload)
+    body = body.lower()
+    if "temperature" in body:
+        retry.pop("temperature", None)
+    config = retry.get("output_config")
+    if config is not None:
+        if "effort" in body:
+            config.pop("effort", None)
+        elif "format" in body or "schema" in body:
+            config.pop("format", None)
+        elif "output_config" in body:
+            config.clear()
+        if not config:
+            retry.pop("output_config")
+    return retry
+
+
 class AnthropicProvider(BaseProvider):
-    async def _complete(self, system: str, user: str) -> str:
-        resp = await http.request(
-            "POST", "https://api.anthropic.com/v1/messages",
+    URL = "https://api.anthropic.com/v1/messages"
+
+    def __init__(self, settings: Settings):
+        super().__init__(settings)
+        self._model = settings.llm_model
+
+    async def recommend(
+        self, profile: dict, n: int, exclude: list[str],
+        liked: list[str] | None = None, disliked: list[str] | None = None,
+    ) -> list[Suggestion]:
+        system, user = _build_prompts(profile, n, exclude, liked, disliked)
+        models = [self.s.llm_model]
+        if self.s.fallback_model:
+            models.append(self.s.fallback_model)
+        for i, model in enumerate(models):
+            self._model = model
+            try:
+                suggestions = await self._recommend_once(system, user, n, model)
+            except (NoSuggestions, ProviderAPIError, httpx.HTTPError) as exc:
+                if i + 1 == len(models) or not _worth_falling_back(exc):
+                    raise
+                log.warning("%s failed (%s: %s) — trying fallback model %s",
+                            model, type(exc).__name__, exc, models[i + 1])
+                continue
+            self.served_model = model
+            return suggestions
+        raise AssertionError("unreachable: the model list is never empty")
+
+    def _payload(self, system: str, user: str) -> dict:
+        model = self._model
+        payload: dict = {
+            "model": model,
+            "messages": [{"role": "user", "content": user}],
+        }
+        if is_legacy_claude(model):
+            payload.update(max_tokens=MAX_TOKENS, system=system,
+                           temperature=self.s.llm_temperature)
+        else:
+            # No `thinking` field: adaptive thinking is the default, and
+            # effort is the control for how much of it happens.
+            payload.update(
+                max_tokens=ANTHROPIC_MAX_TOKENS,
+                system=system + WRAP_HINT,
+                output_config={
+                    "effort": self.s.effort,
+                    "format": {"type": "json_schema",
+                               "schema": RECOMMENDATION_SCHEMA},
+                },
+            )
+        return payload
+
+    async def _post(self, payload: dict):
+        return await http.request(
+            "POST", self.URL,
             headers={
                 "x-api-key": self.s.anthropic_api_key,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
-            json={
-                "model": self.s.llm_model,
-                "max_tokens": MAX_TOKENS,
-                "temperature": self.s.llm_temperature,
-                "system": system,
-                "messages": [{"role": "user", "content": user}],
-            },
+            json=payload,
             timeout=http.LLM_TIMEOUT,
         )
+
+    async def _complete(self, system: str, user: str) -> str:
+        payload = self._payload(system, user)
+        resp = await self._post(payload)
+        if resp.status_code == 400:
+            retry = _relax_anthropic_payload(payload, resp.text[:1000])
+            if retry != payload:
+                log.info("Anthropic rejected the request for %s (400) — "
+                         "retrying with adjusted parameters", self._model)
+                resp = await self._post(retry)
         data = _json_or_error(resp, "Anthropic")
+        stop = data.get("stop_reason")
+        if stop == "refusal":
+            # Branch on stop_reason; stop_details is informational and may be null.
+            details = data.get("stop_details")
+            category = details.get("category") if isinstance(details, dict) else None
+            raise ModelRefused(
+                f"anthropic/{self._model} declined to answer"
+                f"{f' ({category})' if category else ''}. Scan again, or set "
+                f"LLM_FALLBACK_MODEL to a model to try next."
+            )
+        if stop == "max_tokens":
+            log.warning("%s stopped at max_tokens — the answer may be cut short; "
+                        "lower RECS_PER_SCAN or LLM_EFFORT", self._model)
+        # Read by type: current models can open with `thinking` blocks.
         blocks = data.get("content") or []
-        return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        return "".join(b.get("text", "") for b in blocks
+                       if isinstance(b, dict) and b.get("type") == "text")
 
 
 class _OpenAICompatible(BaseProvider):
@@ -266,7 +469,7 @@ class _OpenAICompatible(BaseProvider):
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system",
-                 "content": system + ' Wrap the array as {"recommendations": [...]}.'},
+                 "content": system + WRAP_HINT},
                 {"role": "user", "content": user},
             ],
         }
@@ -358,7 +561,7 @@ class OllamaProvider(BaseProvider):
                             "num_predict": MAX_TOKENS},
                 "messages": [
                     {"role": "system",
-                     "content": system + ' Wrap the array as {"recommendations": [...]}.'},
+                     "content": system + WRAP_HINT},
                     {"role": "user", "content": user},
                 ],
             },
@@ -372,7 +575,8 @@ def _json_or_error(resp, label: str) -> dict:
     if resp.status_code != 200:
         # Bodies can carry useful error info but never secrets we sent.
         snippet = resp.text[:300]
-        raise RuntimeError(f"{label} API error {resp.status_code}: {snippet}")
+        raise ProviderAPIError(f"{label} API error {resp.status_code}: {snippet}",
+                               resp.status_code)
     try:
         return resp.json()
     except json.JSONDecodeError as exc:

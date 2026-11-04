@@ -38,7 +38,8 @@ async def main() -> None:
         print(f"  omdb_usage delta: {delta} "
               f"({'PASS' if delta <= 1 else 'FAIL — expected at most 1'})")
 
-        print(f"\n== (b) LLM provider: {s.llm_provider} / {s.llm_model} ==")
+        fallback = f" (fallback {s.fallback_model})" if s.fallback_model else ""
+        print(f"\n== (b) LLM provider: {s.llm_provider} / {s.llm_model}{fallback} ==")
         profile = {"recently_watched": [
             {"title": "The Bear", "type": "tv", "year": 2022, "plays": 8, "weight": 2.6},
             {"title": "Chef", "type": "movie", "year": 2014, "plays": 2, "weight": 1.4},
@@ -46,14 +47,15 @@ async def main() -> None:
         ]}
         provider = llm.get_provider(s)
         suggestions = await provider.recommend(
-            profile, 5, {"the bear", "chef", "severance"})
+            profile, 5, ["The Bear", "Chef", "Severance"])
         for sug in suggestions:
             score = f"{sug.match_score:>3}%" if sug.match_score is not None else "  —"
             print(f"  {score}  {sug.title} ({sug.year}, "
                   f"{sug.media_type}) — because you watched {sug.because_of or '?'}")
             print(f"        {sug.reason}")
         print(f"  {'PASS' if suggestions else 'FAIL'}: "
-              f"{len(suggestions)} suggestions parsed")
+              f"{len(suggestions)} suggestions parsed "
+              f"(answered by {provider.served_model})")
     finally:
         await http.shutdown()
 

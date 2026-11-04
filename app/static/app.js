@@ -1073,7 +1073,9 @@
       ["Auto scan", autoscanSummary(status.autoscan || {})],
       ["Auto-request", threshold ? `on · match ≥ ${threshold}%` : "off"],
       ["Provider", status.provider],
-      ["Model", status.model],
+      ["Model", status.fallback_model
+        ? `${status.model} · falls back to ${status.fallback_model}`
+        : status.model],
       ["History source", status.history_source],
       ["Streaming region", status.region],
       ["OMDb today", `${status.omdb_today} / ${status.omdb_limit}`],

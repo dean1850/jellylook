@@ -296,7 +296,7 @@ Set `LLM_PROVIDER` and `LLM_MODEL`, then fill in **only** the keys for that prov
 
 | `LLM_PROVIDER` | Needs | Example `LLM_MODEL` |
 |---|---|---|
-| `anthropic` | `ANTHROPIC_API_KEY` | `claude-haiku-4-5` |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-haiku-5-5` (fallback `claude-sonnet-5-5`) |
 | `openai` | `OPENAI_API_KEY` (+ optional `OPENAI_BASE_URL`) | `gpt-4o-mini` |
 | `google` | `GOOGLE_API_KEY` — from [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `gemini-2.0-flash` |
 | `openwebui` | `OPENWEBUI_API_KEY` + `OPENWEBUI_BASE_URL` | whatever your instance serves |
@@ -305,13 +305,22 @@ Set `LLM_PROVIDER` and `LLM_MODEL`, then fill in **only** the keys for that prov
 | Variable | Default | What it does |
 |---|---|---|
 | `LLM_PROVIDER` | `anthropic` | `anthropic`, `openai`, `google`, `openwebui` or `ollama` |
-| `LLM_MODEL` | `claude-haiku-4-5` | Model name, as your provider spells it |
-| `LLM_TEMPERATURE` | `0.7` | Creativity of the suggestions — lower is safer, higher is more adventurous |
+| `LLM_MODEL` | `claude-haiku-5-5` | Model name, as your provider spells it |
+| `LLM_FALLBACK_MODEL` | `claude-sonnet-5-5` | **Anthropic only.** A second model tried when `LLM_MODEL` declines, errors out or returns nothing usable. Leave it empty to turn the fallback off |
+| `LLM_EFFORT` | `medium` | **Anthropic only, current Claude models.** How much the model thinks before answering: `low`, `medium`, `high`, `xhigh` or `max`. `low` is quickest and cheapest; higher levels take longer and cost more |
+| `LLM_TEMPERATURE` | `0.7` | Creativity of the suggestions — lower is safer, higher is more adventurous. Current Claude models (Haiku 5.5, Sonnet 5.5 and later) don't accept it, so jellylook only sends it to older ones |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Point at any OpenAI-compatible endpoint (LM Studio, LiteLLM, vLLM…) |
 | `OPENWEBUI_BASE_URL` | `http://192.168.1.6:8080` | Your Open WebUI address; the key comes from your Open WebUI account settings |
 | `OLLAMA_BASE_URL` | `http://192.168.1.6:11434` | Your Ollama address |
 
 Open WebUI is called through its OpenAI-compatible endpoint (`{OPENWEBUI_BASE_URL}/api/chat/completions`).
+
+On Anthropic, every scan goes to Claude Haiku 5.5 first. Sonnet 5.5 is called
+only if Haiku fails, so most scans cost Haiku prices. Current Claude models also
+answer through a JSON schema, so the reply is always well-formed. Settings →
+Status shows both models, and the scan history records which one answered. Older
+Claude models such as `claude-haiku-4-5` still work: they get the old request,
+`temperature` included.
 
 ### Ratings and artwork
 
@@ -399,6 +408,7 @@ that the scan is recorded as automatic.
 - **Auto-send didn't send anything** — the status line after a scan says why. The usual causes are Seerr being unreachable, nothing in the batch clearing the threshold, or the qualifying titles already being in your library or already requested (all three are skipped on purpose). Set `LOG_LEVEL=INFO` and check `docker compose logs jellylook` for the per-title decisions.
 - **Automatic scans aren't happening** — Settings → Status says which of the three it is. *"not running (no default user)"* means nothing is ticked under **Default user(s)**. *"next in …"* means it simply isn't due yet — the clock counts from your last scan of any kind, including manual ones. *"last run failed"* means it tried; `LOG_LEVEL=INFO` and `docker compose logs jellylook` will name the reason, and it retries within the hour.
 - **OMDb limit** — the free key allows 1,000 lookups/day. The cache makes re-scans nearly free; Settings shows today's count. A scheduled scan stands down when a full scan wouldn't fit in what's left, so the quota is there for the scans you press.
+- **"declined to answer"** — a Claude model's safety check turned the request down (rare for film and TV titles). With `LLM_FALLBACK_MODEL` set, the second model has already been tried by the time you see this; scanning again usually works.
 - **"returned no usable recommendations"** — the model answered but gave nothing back. Usually a small local model ignoring the JSON format, or an exclude list so long there was nothing left to suggest. Try a larger model, or lower `EXCLUDE_BUDGET`.
 - **A genre filter hides older titles** — recommendations scanned before this version have no genre data, and jellylook won't claim an unknown genre is a match. The status line says how many were held back; they age out on their own.
 - **No streaming logos** — check `TMDB_REGION` matches a country TMDb has data for, and remember availability is recorded at scan time, so existing cards keep the region they were scanned under.
